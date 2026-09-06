@@ -178,7 +178,44 @@ _STOPWORDS = frozenset(
     }
 )
 
-_WORD = re.compile(r"[A-Za-z0-9_'-]+")
+#: A query term, in any script. Unicode-aware deliberately: the ASCII-only
+#: class this replaced found no terms at all in a Korean question, so
+#: `build_match` returned an empty MATCH, `_candidates` skipped the lexical
+#: search, and — with no embedder configured — the turn retrieved nothing. That
+#: was #211, and it made memory look empty to anyone not writing in English.
+#: `\w` already carries the ASCII set the old class listed, so nothing about a
+#: Latin query changes; the apostrophe and hyphen stay so "don't" and
+#: "well-known" remain single terms.
+#:
+#: This buys the scripts that put spaces between words. Korean is agglutinative,
+#: so "이름이" and "이름" are still distinct terms here and only the exact form
+#: matches; scripts that do not space words at all, like Chinese, tokenize as
+#: one long term. Both are recall a stemmer or an embedder has to earn — the
+#: bug this fixes was retrieving nothing whatsoever.
+_WORD = re.compile(r"[\w'-]+")
+
+#: Hangul syllables, Han ideographs, and kana — the scripts that fit a whole
+#: noun into two characters.
+_CJK = re.compile(r"[぀-ヿ㐀-䶿一-鿿가-힯]")
+
+#: The longest minimum worth imposing on a term in one of those scripts.
+_CJK_MIN_TERM = 2
+
+
+def _long_enough(term: str, minimum: int) -> bool:
+    """Whether a term carries enough signal to search on.
+
+    The minimums below are about information rather than characters, and a
+    character carries much more of it in Hangul or Han than in Latin: "이름" is
+    `name` and "기록" is `record`, both of which the three-character floor the
+    recent-turn carry applies to English would throw away as noise. Capping the
+    minimum for those scripts keeps ordinary nouns while still dropping the
+    one-character particles they attach to.
+    """
+    if _CJK.search(term):
+        minimum = min(minimum, _CJK_MIN_TERM)
+    return len(term) >= minimum
+
 
 #: Rewrites a message plus recent turns into a standalone query. Supplied by the
 #: caller so the utility model stays out of this module; None means the
@@ -314,7 +351,7 @@ def build_match(query: str) -> str:
     could not survive was a stopword list that let "should" through — so the
     list is the fix, not the operator.
     """
-    terms = [t for t in _WORD.findall(query.lower()) if t not in _STOPWORDS and len(t) > 1]
+    terms = [t for t in _WORD.findall(query.lower()) if t not in _STOPWORDS and _long_enough(t, 2)]
     seen = list(dict.fromkeys(terms))
     return " OR ".join(f'"{term}"' for term in seen)
 
@@ -447,7 +484,7 @@ class Retriever:
             term
             for turn in list(recent)[-3:]
             for term in _WORD.findall(turn.lower())
-            if term not in _STOPWORDS and len(term) > 2
+            if term not in _STOPWORDS and _long_enough(term, 3)
         ]
         return f"{question} {' '.join(dict.fromkeys(context_terms))}".strip(), True
 

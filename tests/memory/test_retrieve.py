@@ -24,6 +24,7 @@ from siatt.memory.retrieve import (
     DEFAULT_LIMIT,
     Candidate,
     Retriever,
+    _long_enough,
     build_match,
     is_self_contained,
     permits,
@@ -376,6 +377,69 @@ async def test_awkward_queries_return_something_rather_than_erroring(
 ) -> None:
     for text in ["it's a NEAR thing", 'say "hello"', "a AND b OR c", "*", ""]:
         await retriever(store, tokenizer).retrieve(text)
+
+
+# -- #211: a question that is not in English ---------------------------------
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "사용자 이름 프로필",  # Korean
+        "内容を教えて",  # Japanese
+        "部署管道由谁负责",  # Chinese
+        "кто владеет конвейером",  # Cyrillic
+        "ποιος είναι υπεύθυνος",  # Greek
+    ],
+)
+def test_a_non_latin_question_still_produces_search_terms(question: str) -> None:
+    """#211: an ASCII-only term class made every one of these an empty MATCH.
+
+    An empty MATCH is not a bad search, it is no search — `_candidates` skips
+    the index entirely — so memory looked empty to anyone not writing English.
+    """
+    assert build_match(question)
+
+
+def test_an_ascii_question_is_tokenized_exactly_as_before() -> None:
+    """The widened class must not quietly change any query that already worked."""
+    assert build_match("Who owns the deploy pipeline?") == '"owns" OR "deploy" OR "pipeline"'
+    assert build_match("it's a well-known problem") == '"it\'s" OR "well-known" OR "problem"'
+
+
+async def test_a_korean_question_retrieves_a_korean_memory(
+    tmp_path: Path, store: Store, tokenizer: Tokenizer
+) -> None:
+    """The end-to-end shape of #211, in the language it was reported in."""
+    bootstrap(tmp_path)
+    wanted = write(
+        tmp_path,
+        MemoryDoc.new(
+            type="fact",
+            title="기록 스타일 선호",
+            body="사용자는 기록할 때 격식 없는 편한 형식을 선호한다.",
+        ),
+    )
+    unrelated = write(
+        tmp_path,
+        MemoryDoc.new(type="topic", title="Postgres", body="MySQL is legacy."),
+    )
+    await MemoryIndex(store, tmp_path).reindex()
+
+    retrieval = await retriever(store, tokenizer).retrieve("기록 스타일 선호")
+
+    assert wanted.id in retrieval.memory_ids
+    assert unrelated.id not in retrieval.memory_ids
+
+
+def test_a_two_character_cjk_noun_survives_the_recent_turn_floor() -> None:
+    """`이름` is `name`. The English three-character floor threw it away."""
+    assert _long_enough("이름", 3)
+    assert _long_enough("記録", 3)
+    assert not _long_enough("내", 3)
+    # Latin is unchanged: the floor is still three.
+    assert not _long_enough("is", 3)
+    assert _long_enough("name", 3)
 
 
 # -- scope: the filter that must never be forgotten --------------------------
