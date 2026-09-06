@@ -256,6 +256,49 @@ async def test_the_fixture_conversation_yields_the_expected_observations(store: 
     assert [json.loads(o["source_refs"]) for o in pending] == [[ids[2]], [ids[3]]]
 
 
+async def test_the_speaker_is_a_name_and_not_a_slack_id(store: Store) -> None:
+    """`<@U0456>` inside a message is resolved before it is stored; the label
+    the message was said under was not, so the id went to the extractor anyway
+    and came back inside the claims (#227)."""
+    await store.upsert_slack_user(
+        team_id="T0", user_id="U0BUH766T55", display_name="keunwoo", real_name="Keunwoo Park"
+    )
+    await seed(store, turns=(("user", "U0BUH766T55", "I want the AI news at 9am."),))
+    await make_idle(store)
+    closer, provider = closer_for(store, talking())
+
+    await closer.sweep()
+
+    for request in provider.requests:
+        sent = request.messages[0].text
+        assert "keunwoo: I want the AI news" in sent
+        assert "U0BUH766T55" not in sent
+
+
+async def test_an_author_the_directory_cannot_name_stays_as_it_is(store: Store) -> None:
+    """The same answer `_render_mentions` gives an unresolvable mention: a name
+    nobody can act on would be worse than the id, and dropping the speaker
+    deletes a participant from the sentence."""
+    await seed(store, turns=(("user", "U0NOBODY", "I want the AI news at 9am."),))
+    await make_idle(store)
+    closer, provider = closer_for(store, talking())
+
+    await closer.sweep()
+
+    assert "U0NOBODY: I want the AI news" in provider.requests[0].messages[0].text
+
+
+async def test_a_message_with_no_author_is_still_labelled(store: Store) -> None:
+    """Siatt's own turns have no author, and the role is what they are."""
+    await seed(store, turns=(("assistant", None, "Noted."),))
+    await make_idle(store)
+    closer, provider = closer_for(store, talking())
+
+    await closer.sweep()
+
+    assert "assistant: Noted." in provider.requests[0].messages[0].text
+
+
 async def test_every_source_ref_resolves_to_a_real_message(store: Store) -> None:
     await seed(store)
     await make_idle(store)

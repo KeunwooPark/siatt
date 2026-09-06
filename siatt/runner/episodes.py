@@ -37,7 +37,7 @@ picks up and pays for again every five minutes.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -227,7 +227,8 @@ class EpisodeCloser:
         rows = await self._store.episode_messages(
             episode_id, limit=self._settings.transcript_messages
         )
-        lines, sources = _render(rows)
+        names = await self._store.author_names([str(row["author"] or "") for row in rows])
+        lines, sources = _render(rows, names)
 
         assessment = await self._assess(lines, episode_id) if lines else None
         gated = self._is_gated(assessment, episode_id)
@@ -341,7 +342,9 @@ class EpisodeCloser:
 # -- the transcript ----------------------------------------------------------
 
 
-def _render(rows: Sequence[dict[str, Any]]) -> tuple[list[str], list[str]]:
+def _render(
+    rows: Sequence[dict[str, Any]], names: Mapping[str, str] | None = None
+) -> tuple[list[str], list[str]]:
     """The numbered transcript lines, and the message id each one came from.
 
     Line numbers rather than ids in the prompt, and a lookup back to ids here.
@@ -349,14 +352,24 @@ def _render(rows: Sequence[dict[str, Any]]) -> tuple[list[str], list[str]]:
     ref to resolve, and asking it to do that for every observation buys nothing
     that counting does not — while a mistyped one is a citation that points at
     nothing.
+
+    The speaker is a name wherever the directory knows one. A `<@U0456>` inside
+    a message is already resolved before it is stored, and leaving the label it
+    was said under as a raw uid put that id back into the transcript — the
+    extractor then wrote claims *about* `U0BUH766T55`, and every one of them
+    became its own subject, reconciled against nothing (#227). An id the
+    directory cannot name stays an id, which is what a mention nobody can
+    resolve does and for the same reason.
     """
+    known = names or {}
     lines: list[str] = []
     sources: list[str] = []
     for row in rows:
         text = _text_of(str(row["content"])).strip()
         if not text:
             continue  # a tool call, or a turn that was only thinking
-        speaker = str(row["author"] or row["role"])
+        author = str(row["author"] or "")
+        speaker = known.get(author, author) or str(row["role"])
         sources.append(str(row["id"]))
         lines.append(f"[{len(sources)}] {speaker}: {text[:MAX_MESSAGE_CHARS]}")
     return lines, sources

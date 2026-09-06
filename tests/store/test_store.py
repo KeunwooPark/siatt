@@ -484,3 +484,23 @@ async def test_a_thread_belongs_to_the_conversation_that_opened_it(store: Store)
         await store.slack_thread_session(team_id="T01", channel="C0AI", thread_ts="1700.1")
         == "slack:task:01J@09:00"
     )
+
+
+# -- who an author id belongs to ----------------------------------------------
+
+
+async def test_author_names_answers_only_for_ids_the_directory_knows(store: Store) -> None:
+    """An unknown id is absent rather than empty: the caller keeps the id, and
+    a name nobody can act on would be worse than one."""
+    await store.upsert_slack_user(
+        team_id="T01", user_id="U01", display_name="jane", real_name="Jane Doe"
+    )
+    await store.upsert_slack_user(team_id="T01", user_id="U02", display_name="", real_name="Priya")
+
+    names = await store.author_names(["U01", "U02", "U03", ""])
+
+    assert names == {"U01": "jane", "U02": "Priya"}
+
+
+async def test_author_names_of_nothing_asks_nothing(store: Store) -> None:
+    assert await store.author_names([]) == {}
