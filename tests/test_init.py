@@ -1,4 +1,4 @@
-"""`kasa init` end to end, against a real git remote on disk.
+"""`siatt init` end to end, against a real git remote on disk.
 
 The remote is a bare repo in `tmp_path` and GitHub is a mock transport, so the
 whole setup path — create, clone, bootstrap, commit, push — runs for real
@@ -14,15 +14,15 @@ from typing import Any
 import httpx
 import pytest
 
-from kasa.config import ProviderKind, load_config
-from kasa.errors import ConfigError
-from kasa.github import GitHubClient
-from kasa.init import FAUCET_BASE_URL, run_init
-from kasa.memory.gitcmd import GitRepo, run_git
-from kasa.memory.layout import MANIFEST_PATH, SCHEMA_PATH
+from siatt.config import ProviderKind, load_config
+from siatt.errors import ConfigError
+from siatt.github import GitHubClient
+from siatt.init import FAUCET_BASE_URL, run_init
+from siatt.memory.gitcmd import GitRepo, run_git
+from siatt.memory.layout import MANIFEST_PATH, SCHEMA_PATH
 from tests.conftest import mock_client
 
-TOKEN_ENV = "KASA_GITHUB_TOKEN"
+TOKEN_ENV = "SIATT_GITHUB_TOKEN"
 
 
 class ScriptedPrompter:
@@ -82,7 +82,7 @@ class ScriptedPrompter:
 
 
 def repo_payload(
-    full_name: str = "someone/kasa-memory",
+    full_name: str = "someone/siatt-memory",
     *,
     private: bool = True,
     clone_url: str = "",
@@ -145,7 +145,7 @@ async def do_init(
     config = tmp_path / "config.toml"
     clone = tmp_path / "ltm"
     prompter = prompter or ScriptedPrompter(
-        {"memory repo": "someone/kasa-memory", "clone path": str(clone)}
+        {"memory repo": "someone/siatt-memory", "clone path": str(clone)}
     )
     client = fake_github(clone_url=remote, **github)
     try:
@@ -169,7 +169,7 @@ async def test_init_creates_clones_bootstraps_and_pushes(tmp_path: Path, remote:
     assert (clone / "README.md").exists()
 
     cfg = load_config(config)
-    assert cfg.ltm.repo == "someone/kasa-memory"
+    assert cfg.ltm.repo == "someone/siatt-memory"
     assert cfg.ltm.branch == "main"
     assert cfg.llm["chat"].model
 
@@ -215,13 +215,13 @@ async def test_second_run_does_not_clobber_the_corpus(tmp_path: Path, remote: st
     GitRepo.at(clone).commit("memory: add jane", paths=["memory/people/jane.md", "README.md"])
     before = GitRepo.at(clone).head()
 
-    prompter = ScriptedPrompter({"memory repo": "someone/kasa-memory", "clone path": str(clone)})
+    prompter = ScriptedPrompter({"memory repo": "someone/siatt-memory", "clone path": str(clone)})
     await do_init(tmp_path, remote, prompter=prompter, exists=True, empty=False)
 
     assert memory.read_text().startswith("---\nid: mem_01")
     assert (clone / "README.md").read_text() == "hand-edited\n"
     assert GitRepo.at(clone).head() == before, "a no-op run should not commit"
-    assert load_config(config).ltm.repo == "someone/kasa-memory"
+    assert load_config(config).ltm.repo == "someone/siatt-memory"
 
 
 async def test_second_run_leaves_uncommitted_work_alone(tmp_path: Path, remote: str) -> None:
@@ -229,7 +229,7 @@ async def test_second_run_leaves_uncommitted_work_alone(tmp_path: Path, remote: 
     draft = clone / "memory/facts/draft.md"
     draft.write_text("a half-written thought\n")
 
-    prompter = ScriptedPrompter({"memory repo": "someone/kasa-memory", "clone path": str(clone)})
+    prompter = ScriptedPrompter({"memory repo": "someone/siatt-memory", "clone path": str(clone)})
     await do_init(tmp_path, remote, prompter=prompter, exists=True, empty=False)
 
     assert draft.exists()
@@ -245,7 +245,7 @@ async def test_changing_the_repo_requires_confirmation(tmp_path: Path, remote: s
     )
     await do_init(tmp_path, remote, prompter=declining, exists=True, empty=False)
 
-    assert load_config(config).ltm.repo == "someone/kasa-memory"
+    assert load_config(config).ltm.repo == "someone/siatt-memory"
     assert any("replaces the configured repo" in w for w in declining.warned)
 
 
@@ -293,14 +293,14 @@ async def test_public_repo_is_refused_before_anything_is_written(
 
 
 async def test_owner_name_without_a_token_is_a_clear_error(tmp_path: Path) -> None:
-    prompter = ScriptedPrompter({"memory repo": "someone/kasa-memory"})
+    prompter = ScriptedPrompter({"memory repo": "someone/siatt-memory"})
     with pytest.raises(ConfigError, match=TOKEN_ENV):
         await run_init(prompter, path=tmp_path / "config.toml")
 
 
 async def test_declining_to_create_the_repo_aborts(tmp_path: Path, remote: str) -> None:
     prompter = ScriptedPrompter(
-        {"memory repo": "someone/kasa-memory", "clone path": str(tmp_path / "ltm")},
+        {"memory repo": "someone/siatt-memory", "clone path": str(tmp_path / "ltm")},
         confirms={"Create": False},
     )
     with pytest.raises(ConfigError, match="creating it was declined"):
@@ -308,7 +308,7 @@ async def test_declining_to_create_the_repo_aborts(tmp_path: Path, remote: str) 
 
 
 async def test_a_plain_git_url_skips_github_but_warns(tmp_path: Path, remote: str) -> None:
-    """A URL Kasa cannot ask GitHub about is allowed, loudly."""
+    """A URL Siatt cannot ask GitHub about is allowed, loudly."""
     seed = tmp_path / "seed"
     GitRepo.init(seed, branch="main")
     (seed / "x").write_text("x")
@@ -328,7 +328,7 @@ async def test_a_plain_git_url_skips_github_but_warns(tmp_path: Path, remote: st
 
 async def test_optional_roles_can_be_declined(tmp_path: Path, remote: str) -> None:
     prompter = ScriptedPrompter(
-        {"memory repo": "someone/kasa-memory", "clone path": str(tmp_path / "ltm")},
+        {"memory repo": "someone/siatt-memory", "clone path": str(tmp_path / "ltm")},
         confirms={"different models": False, "Slack": False},
     )
     _, config, _ = await do_init(tmp_path, remote, prompter=prompter)
@@ -346,13 +346,13 @@ async def test_existing_extra_roles_make_the_advanced_gate_default_to_yes(
     config = tmp_path / "config.toml"
     clone = tmp_path / "ltm"
     config.write_text(
-        f'[ltm]\nrepo = "someone/kasa-memory"\nclone_path = "{clone}"\n\n'
+        f'[ltm]\nrepo = "someone/siatt-memory"\nclone_path = "{clone}"\n\n'
         '[llm.chat]\nkind = "anthropic"\nmodel = "chat"\n\n'
         '[llm.utility]\nkind = "openai"\nmodel = "utility"\n\n'
         '[llm.embedding]\nkind = "openai"\nmodel = "embedding"\n'
     )
     prompter = ScriptedPrompter(
-        {"memory repo": "someone/kasa-memory", "clone path": str(clone)},
+        {"memory repo": "someone/siatt-memory", "clone path": str(clone)},
         confirms={"Slack": False},
     )
     client = fake_github(clone_url=remote)
@@ -367,7 +367,7 @@ async def test_existing_extra_roles_make_the_advanced_gate_default_to_yes(
 async def test_slack_tokens_are_recorded_by_name(tmp_path: Path, remote: str) -> None:
     prompter = ScriptedPrompter(
         {
-            "memory repo": "someone/kasa-memory",
+            "memory repo": "someone/siatt-memory",
             "clone path": str(tmp_path / "ltm"),
             "channel ids": "C0123,C0456",
         },
@@ -392,7 +392,7 @@ async def test_faucet_preset_discovers_and_writes_plain_openai_config(
     monkeypatch.setenv("FAUCET_API_KEY", "faucet-secret")
     prompter = ScriptedPrompter(
         {
-            "memory repo": "someone/kasa-memory",
+            "memory repo": "someone/siatt-memory",
             "clone path": str(tmp_path / "ltm"),
             "preset for chat": "faucet",
             "model for chat": "anthropic/claude-opus-5",
@@ -434,7 +434,7 @@ async def test_model_discovery_is_optional_and_typed_names_remain_open(
     typed = "vendor/a-model-not-in-the-list"
     prompter = ScriptedPrompter(
         {
-            "memory repo": "someone/kasa-memory",
+            "memory repo": "someone/siatt-memory",
             "clone path": str(tmp_path / "ltm"),
             "preset for chat": "faucet",
             "model for chat": typed,
@@ -469,7 +469,7 @@ async def test_a_relative_clone_answer_is_stored_absolutely(
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
 
-    prompter = ScriptedPrompter({"memory repo": "someone/kasa-memory", "clone path": "ltm-here"})
+    prompter = ScriptedPrompter({"memory repo": "someone/siatt-memory", "clone path": "ltm-here"})
     _, config, _ = await do_init(tmp_path, remote, prompter=prompter)
 
     cfg = load_config(config)
@@ -483,10 +483,10 @@ async def test_a_relative_clone_answer_is_stored_absolutely(
 
 
 async def test_web_search_is_off_unless_it_is_asked_for(tmp_path: Path, remote: str) -> None:
-    """Reading the open web is a decision about what may enter Kasa's prompts,
+    """Reading the open web is a decision about what may enter Siatt's prompts,
     so it is made on purpose rather than arrived at by pressing enter."""
     prompter = ScriptedPrompter(
-        {"memory repo": "someone/kasa-memory", "clone path": str(tmp_path / "ltm")},
+        {"memory repo": "someone/siatt-memory", "clone path": str(tmp_path / "ltm")},
         confirms={"web search": False},
     )
     _, config, _ = await do_init(tmp_path, remote, prompter=prompter)
@@ -497,9 +497,9 @@ async def test_web_search_is_off_unless_it_is_asked_for(tmp_path: Path, remote: 
 async def test_web_search_records_the_key_by_name(tmp_path: Path, remote: str) -> None:
     prompter = ScriptedPrompter(
         {
-            "memory repo": "someone/kasa-memory",
+            "memory repo": "someone/siatt-memory",
             "clone path": str(tmp_path / "ltm"),
-            "Brave Search API key": "KASA_BRAVE",
+            "Brave Search API key": "SIATT_BRAVE",
         },
         confirms={"web search": True},
     )
@@ -507,12 +507,12 @@ async def test_web_search_records_the_key_by_name(tmp_path: Path, remote: str) -
 
     search = load_config(config).search
     assert search.kind == "brave"
-    assert search.key_env == "KASA_BRAVE"
+    assert search.key_env == "SIATT_BRAVE"
 
 
 async def test_the_search_step_says_what_it_lets_in(tmp_path: Path, remote: str) -> None:
     prompter = ScriptedPrompter(
-        {"memory repo": "someone/kasa-memory", "clone path": str(tmp_path / "ltm")},
+        {"memory repo": "someone/siatt-memory", "clone path": str(tmp_path / "ltm")},
         confirms={"web search": False},
     )
     await do_init(tmp_path, remote, prompter=prompter)
@@ -523,14 +523,14 @@ async def test_the_search_step_says_what_it_lets_in(tmp_path: Path, remote: str)
 async def test_turning_search_off_again_clears_the_section(tmp_path: Path, remote: str) -> None:
     """Declining on a re-run must remove it, not leave a stale key behind."""
     enabling = ScriptedPrompter(
-        {"memory repo": "someone/kasa-memory", "clone path": str(tmp_path / "ltm")},
+        {"memory repo": "someone/siatt-memory", "clone path": str(tmp_path / "ltm")},
         confirms={"web search": True},
     )
     _, config, _ = await do_init(tmp_path, remote, prompter=enabling)
     assert load_config(config).search.configured
 
     disabling = ScriptedPrompter(
-        {"memory repo": "someone/kasa-memory", "clone path": str(tmp_path / "ltm")},
+        {"memory repo": "someone/siatt-memory", "clone path": str(tmp_path / "ltm")},
         confirms={"web search": False},
     )
     await do_init(tmp_path, remote, prompter=disabling)

@@ -19,8 +19,8 @@ from typing import Any
 
 import pytest
 
-from kasa.memory.lease import Lease, LeaseError, LockingUnavailable, stale_lease
-from kasa.store import Store
+from siatt.memory.lease import Lease, LeaseError, LockingUnavailable, stale_lease
+from siatt.store import Store
 
 _real_flock = fcntl.flock
 
@@ -53,16 +53,16 @@ async def test_a_filesystem_that_cannot_lock_is_not_reported_as_contention(
     monkeypatch.setattr(fcntl, "flock", refusing(code))
 
     with pytest.raises(LockingUnavailable) as caught:
-        await Lease(store, tmp_path / "kasa.lock").acquire()
+        await Lease(store, tmp_path / "siatt.lock").acquire()
 
     assert not isinstance(caught.value, LeaseError), "a skip would swallow it"
     assert os.strerror(code) in str(caught.value)
-    assert str(tmp_path / "kasa.lock") in str(caught.value)
+    assert str(tmp_path / "siatt.lock") in str(caught.value)
 
 
 async def test_someone_else_holding_it_is_still_contention(tmp_path: Path, store: Store) -> None:
     """The half that must keep working: `EAGAIN` is the answer, not a fault."""
-    lock = tmp_path / "kasa.lock"
+    lock = tmp_path / "siatt.lock"
     held = await Lease(store, lock).acquire(job="the one that got there first")
     try:
         with pytest.raises(LeaseError) as caught:
@@ -76,17 +76,17 @@ async def test_someone_else_holding_it_is_still_contention(tmp_path: Path, store
 async def test_the_startup_check_does_not_bring_the_process_down(
     tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch, caplog: Any
 ) -> None:
-    """`stale_lease` runs on every `MemoryStore.open` and in `kasa doctor`, and
+    """`stale_lease` runs on every `MemoryStore.open` and in `siatt doctor`, and
     only decides whether to *report* a row a crash left behind. Without working
     locks it cannot tell a live holder from a dead one — so it says nothing
     rather than raising a startup failure or crying wolf on every start. The
     `acquire` that is about to write is where this has to be loud."""
-    lock = tmp_path / "kasa.lock"
+    lock = tmp_path / "siatt.lock"
     lock.touch()
     await store.take_lease("ltm", holder="somebody:1", job=None, ttl_seconds=900.0)
     monkeypatch.setattr(fcntl, "flock", refusing(errno.ENOLCK))
 
-    with caplog.at_level("WARNING", logger="kasa.memory.lease"):
+    with caplog.at_level("WARNING", logger="siatt.memory.lease"):
         assert await stale_lease(store, lock) is None
 
     assert "No locks available" in caplog.text

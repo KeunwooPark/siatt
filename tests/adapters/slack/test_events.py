@@ -1,4 +1,4 @@
-"""What Slack sends, and what Kasa decides it means.
+"""What Slack sends, and what Siatt decides it means.
 
 No `slack_bolt` here on purpose: every judgement that can leak a private
 conversation is in `events.py`, and none of it needs a socket to test.
@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from kasa.adapters.slack.events import (
+from siatt.adapters.slack.events import (
     Accepted,
     Changed,
     Decision,
@@ -24,9 +24,9 @@ from kasa.adapters.slack.events import (
     reaction,
     scope_for,
 )
-from kasa.config import SlackSettings
+from siatt.config import SlackSettings
 
-BOT = "U0KASA"
+BOT = "U0SIATT"
 TEAM = "T0TEAM"
 HUMAN = "U0HUMAN"
 
@@ -108,7 +108,7 @@ async def test_a_mention_in_a_channel_is_answered_and_scoped_to_the_channel() ->
 
     event = accepted(decision).event
     assert event.scope == "channel:C1"
-    assert event.text == "what did we decide?", "Kasa's own mention is addressing, not content"
+    assert event.text == "what did we decide?", "Siatt's own mention is addressing, not content"
 
 
 async def test_an_app_mention_carries_no_channel_type_and_is_still_a_channel() -> None:
@@ -206,7 +206,7 @@ async def test_a_question_with_a_file_attached_is_answered() -> None:
 
     event = accepted(await normalize(body, context=context(), known_session=never)).event
 
-    assert event.text == "what's in this?\n\n[attached, which Kasa cannot open: q3.pdf]"
+    assert event.text == "what's in this?\n\n[attached, which Siatt cannot open: q3.pdf]"
 
 
 async def test_a_file_with_no_comment_still_says_what_arrived() -> None:
@@ -215,7 +215,7 @@ async def test_a_file_with_no_comment_still_says_what_arrived() -> None:
 
     event = accepted(await normalize(body, context=context(), known_session=never)).event
 
-    assert event.text == "[attached, which Kasa cannot open: q3.pdf, an untitled file]"
+    assert event.text == "[attached, which Siatt cannot open: q3.pdf, an untitled file]"
 
 
 async def test_a_file_entry_that_is_not_an_object_is_still_an_attachment() -> None:
@@ -233,7 +233,7 @@ async def test_a_file_entry_that_is_not_an_object_is_still_an_attachment() -> No
 
     assert event.text == (
         "what's in this?\n\n"
-        "[attached, which Kasa cannot open: an untitled file, q3.pdf, an untitled file]"
+        "[attached, which Siatt cannot open: an untitled file, q3.pdf, an untitled file]"
     )
 
 
@@ -261,18 +261,18 @@ async def test_the_subtypes_that_are_somebody_talking_get_through(subtype: str) 
 # -- what does not ------------------------------------------------------------
 
 
-async def test_a_channel_message_that_is_not_addressed_to_kasa_is_ignored() -> None:
+async def test_a_channel_message_that_is_not_addressed_to_siatt_is_ignored() -> None:
     decision = await normalize(
         in_channel("what did we decide?"), context=context(), known_session=never
     )
 
     assert isinstance(decision, Ignored)
-    assert decision.reason == "not addressed to Kasa"
+    assert decision.reason == "not addressed to Siatt"
 
 
 @pytest.mark.parametrize("subtype", ["channel_join", "channel_topic", "invented"])
 async def test_a_subtype_that_is_not_somebody_talking_is_ignored(subtype: str) -> None:
-    """An unknown subtype is ignored rather than answered, because Kasa replies
+    """An unknown subtype is ignored rather than answered, because Siatt replies
     in any thread it is already part of and "Bob joined the channel" is not a
     question."""
     decision = await normalize(dm() | {"subtype": subtype}, context=context(), known_session=never)
@@ -290,11 +290,11 @@ async def test_a_revision_is_never_something_to_answer(subtype: str) -> None:
     assert not isinstance(decision, Accepted)
 
 
-async def test_kasas_own_message_is_ignored() -> None:
+async def test_siatts_own_message_is_ignored() -> None:
     decision = await normalize(dm() | {"user": BOT}, context=context(), known_session=always)
 
     assert isinstance(decision, Ignored)
-    assert decision.reason == "posted by Kasa"
+    assert decision.reason == "posted by Siatt"
 
 
 async def test_another_bot_is_ignored() -> None:
@@ -320,7 +320,7 @@ async def test_a_channel_off_the_allowlist_is_ignored_even_when_addressed() -> N
     assert decision.reason == "channel CSECRET is not on the allowlist"
 
 
-async def test_an_empty_allowlist_allows_the_channels_kasa_was_invited_to() -> None:
+async def test_an_empty_allowlist_allows_the_channels_siatt_was_invited_to() -> None:
     """Inviting a bot to a channel is already a deliberate act by a person."""
     assert isinstance(
         await normalize(in_channel(), context=context(), known_session=never), Accepted
@@ -441,7 +441,7 @@ async def test_an_edited_message_is_keyed_the_same_way_the_original_was() -> Non
     assert revision.revision.external_id == original.event.external_id
 
 
-async def test_kasas_own_message_changing_is_not_a_revision() -> None:
+async def test_siatts_own_message_changing_is_not_a_revision() -> None:
     """A streamed reply is one `chat.update` per second (#22), and every one of
     them comes back as a `message_changed`. Without this an answer would revise
     itself thirty times."""
@@ -451,12 +451,12 @@ async def test_kasas_own_message_changing_is_not_a_revision() -> None:
 
 
 async def test_a_bot_message_changing_is_not_a_revision() -> None:
-    decision = await normalize(edited(bot_id="B0KASA"), context=context(), known_session=always)
+    decision = await normalize(edited(bot_id="B0SIATT"), context=context(), known_session=always)
 
     assert isinstance(decision, Ignored)
 
 
-async def test_kasas_own_mention_is_stripped_from_an_edit_as_well() -> None:
+async def test_siatts_own_mention_is_stripped_from_an_edit_as_well() -> None:
     """The stored text had it stripped, so an edit that put it back would
     rewrite the message into something ingress would never have written."""
     decision = await normalize(
@@ -565,8 +565,8 @@ def test_the_judgements_import_without_the_slack_extra() -> None:
 
         sys.meta_path.insert(0, Absent())
 
-        import kasa.adapters.slack as package
-        from kasa.adapters.slack.events import normalize, scope_for
+        import siatt.adapters.slack as package
+        from siatt.adapters.slack.events import normalize, scope_for
 
         assert "slack_bolt" not in sys.modules, "something imported it anyway"
         assert package.scope_for is scope_for
@@ -592,7 +592,7 @@ def test_asking_for_the_adapter_is_what_needs_the_extra() -> None:
 
         sys.meta_path.insert(0, Absent())
 
-        import kasa.adapters.slack as package
+        import siatt.adapters.slack as package
 
         try:
             package.SlackAdapter
@@ -650,7 +650,7 @@ def approved(decision: Decision) -> Reacted:
 
 async def test_a_thumbs_up_names_the_answer_it_is_on() -> None:
     """The answer, not the question: a reaction names the message it sits on,
-    and the message it sits on is Kasa's reply."""
+    and the message it sits on is Siatt's reply."""
     decision = approved(reaction(reacted(), context=context(), verdicts=VERDICTS))
 
     assert decision.external_id == f"slack:{TEAM}:D1:1700000001.000000"
@@ -696,14 +696,14 @@ async def test_the_mapping_is_configurable() -> None:
 
 
 async def test_a_reaction_on_somebody_elses_message_is_not_feedback() -> None:
-    """People react to each other all day. Only a reaction on one of Kasa's own
+    """People react to each other all day. Only a reaction on one of Siatt's own
     answers says anything about memory."""
     decision = reaction(reacted(item_user=HUMAN), context=context(), verdicts=VERDICTS)
 
     assert isinstance(decision, Ignored)
 
 
-async def test_kasas_own_reaction_is_not_feedback() -> None:
+async def test_siatts_own_reaction_is_not_feedback() -> None:
     decision = reaction(reacted(user=BOT), context=context(), verdicts=VERDICTS)
 
     assert isinstance(decision, Ignored)

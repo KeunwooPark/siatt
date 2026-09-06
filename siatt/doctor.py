@@ -1,0 +1,510 @@
+"""`siatt doctor` — check the things that are expensive to discover later.
+
+The failures this catches share a shape: they are all silent. A token that lost
+a scope, a memory repo that quietly became public, a config that points at a
+model nobody configured a key for. None of them announce themselves; they show
+up as a job that stopped working three weeks ago, or as a private conversation
+in a public repository.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.util
+import logging
+import os
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+
+from siatt.config import Config, config_path, default_key_env, default_search_key_env
+from siatt.errors import ConfigError, GitHubError, SiattError
+from siatt.github import GitHubClient, RepoInfo, is_full_name
+from siatt.memory.bootstrap import is_bootstrapped
+from siatt.memory.document import MemoryError_
+from siatt.memory.gitcmd import GitRepo, git_available
+from siatt.memory.index import MemoryIndex
+from siatt.memory.lease import LEASE_NAME, LOCK_FILENAME, stale_lease
+from siatt.memory.manifest import Manifest
+from siatt.store import Store
+from siatt.vault import Vault, check_placement, enclosing_git_repo, resolve, vault_path
+
+log = logging.getLogger(__name__)
+
+REPO_WENT_PUBLIC = (
+    "{name} is public.\n"
+    "It was configured as a private long-term memory repo, and it holds whatever "
+    "the agent has been told. Siatt will not start against it. Make it private "
+    "again, and audit who had access while it was not."
+)
+
+
+class Status(StrEnum):
+    OK = "ok"
+    WARN = "warn"
+    FAIL = "fail"
+    SKIP = "skip"
+
+
+@dataclass(frozen=True, slots=True)
+class Check:
+    name: str
+    status: Status
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class Report:
+    checks: tuple[Check, ...]
+
+    @property
+    def failed(self) -> tuple[Check, ...]:
+        return tuple(c for c in self.checks if c.status is Status.FAIL)
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed
+
+
+async def diagnose(
+    cfg: Config, *, path: Path | None = None, github: GitHubClient | None = None
+) -> Report:
+    checks = [_config_file(path or config_path()), _git_binary()]
+    checks += _models(cfg)
+    checks += await _memory_repo(cfg, github=github)
+    checks += _slack(cfg)
+    checks += _vault(cfg)
+    checks += await _store_checks(cfg)
+    checks.append(_manifest(cfg))
+    checks += _embeddings(cfg)
+    checks.append(_search(cfg))
+    checks.append(_fetch(cfg))
+    checks.append(_browser(cfg))
+    return Report(tuple(checks))
+
+
+async def verify_repo_visibility(cfg: Config, *, github: GitHubClient | None = None) -> None:
+    """Refuse to start when the memory repo is now public.
+
+    Only a definitive answer stops the daemon. Being unable to reach GitHub, or
+    having no token to ask with, is a warning's worth of information — refusing
+    to start whenever the network is down would make the check the outage.
+    """
+    if not cfg.ltm.configured:
+        return
+    try:
+        info = await _lookup(cfg, github=github)
+    except GitHubError as exc:
+        log.warning("could not verify that %s is still private: %s", cfg.ltm.repo, exc)
+        return
+    if info is not None and not info.private:
+        raise ConfigError(REPO_WENT_PUBLIC.format(name=info.full_name))
+
+
+# -- individual checks -------------------------------------------------------
+
+
+def _config_file(path: Path) -> Check:
+    if not path.exists():
+        return Check(
+            "config",
+            Status.WARN,
+            f"{path} does not exist; running from the environment. Try `siatt init`.",
+        )
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        return Check("config", Status.FAIL, f"{path}: {exc}")
+    if mode & 0o077:
+        return Check("config", Status.WARN, f"{path} is readable by other users (chmod 600 it)")
+    return Check("config", Status.OK, str(path))
+
+
+def _git_binary() -> Check:
+    if not git_available():
+        return Check("git", Status.FAIL, "git is not on PATH; long-term memory needs it")
+    return Check("git", Status.OK, "available")
+
+
+def _models(cfg: Config) -> list[Check]:
+    if not cfg.llm:
+        return [Check("models", Status.FAIL, "no model configured for the 'chat' role")]
+
+    checks = []
+    for role, provider in sorted(cfg.llm.items()):
+        env = provider.key_env or default_key_env(provider.kind)
+        try:
+            provider.api_key()
+        except ConfigError:
+            checks.append(
+                Check(f"model:{role}", Status.FAIL, f"{provider.model} — {env} is not set")
+            )
+            continue
+        checks.append(Check(f"model:{role}", Status.OK, f"{provider.model} via {env}"))
+
+    if "chat" not in cfg.llm:
+        checks.append(Check("models", Status.FAIL, "no model configured for the 'chat' role"))
+    return checks
+
+
+def _search(cfg: Config) -> Check:
+    """Whether the web is reachable, and whether the key for it resolves.
+
+    Unconfigured is `SKIP`, not `WARN`: most installs will never want the agent
+    reading the open web, and a nag for a capability nobody asked for trains
+    people to ignore the report.
+    """
+    search = cfg.search
+    if search.kind is None:
+        return Check("web search", Status.SKIP, "not configured; the agent cannot search the web")
+    env = search.key_env or default_search_key_env(search.kind)
+    try:
+        search.api_key()
+    except ConfigError:
+        return Check("web search", Status.FAIL, f"{search.kind} — {env} is not set")
+    return Check("web search", Status.OK, f"{search.kind} via {env}")
+
+
+def _fetch(cfg: Config) -> Check:
+    """Whether the agent may open a page, and how much of one it may read.
+
+    `OK` either way. Off is a choice an install made rather than something
+    wrong with it, and the report says which limits are in force because
+    "the page came back cut off" is otherwise a mystery.
+    """
+    fetch = cfg.fetch
+    if not fetch.enabled:
+        return Check("web fetch", Status.SKIP, "disabled; the agent cannot open a page")
+    return Check(
+        "web fetch",
+        Status.OK,
+        f"up to {fetch.max_chars:,} chars, {fetch.timeout_seconds:.0f}s, "
+        f"{fetch.max_redirects} redirect(s)",
+    )
+
+
+def _browser(cfg: Config) -> Check:
+    """Whether a page can be rendered, and whether there is a browser to do it.
+
+    The import is the check. `playwright` being installed is what separates
+    "off because nobody asked" from "on, and it will fail on the first render",
+    and the second is exactly the kind of thing `doctor` exists to say before a
+    turn discovers it.
+    """
+    if not cfg.fetch.enabled:
+        return Check(
+            "page rendering", Status.SKIP, "web fetch is off, so there is nothing to render"
+        )
+    if not cfg.browser.enabled:
+        return Check(
+            "page rendering",
+            Status.SKIP,
+            "off; a page that draws itself in the browser comes back without its content",
+        )
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        return Check(
+            "page rendering",
+            Status.FAIL,
+            "enabled, but the browser extra is not installed — "
+            "`uv sync --extra browser && uv run playwright install chromium`",
+        )
+    return Check(
+        "page rendering",
+        Status.OK,
+        f"chromium, up to {cfg.browser.timeout_seconds:.0f}s and "
+        f"{cfg.browser.max_requests} request(s) per page",
+    )
+
+
+def _vault(cfg: Config) -> list[Check]:
+    """The vault's own health: can it be read, and is it somewhere safe.
+
+    Every failure here is caught rather than raised. `doctor` is the command
+    somebody runs *because* something is wrong, so a vault with bad permissions
+    has to be reported as a red line in the report — the one place it is
+    actionable — and not as a traceback that takes the other fifteen checks
+    down with it.
+    """
+    path = vault_path()
+    if not path.exists():
+        return [Check("vault", Status.SKIP, f"{path} does not exist; no secrets stored")]
+
+    checks: list[Check] = []
+    try:
+        check_placement(path, clone_path=cfg.ltm.resolved_clone_path())
+    except ConfigError as exc:
+        # The worst case in the system: a credential store inside a directory
+        # that background jobs commit and push on a schedule.
+        return [Check("vault", Status.FAIL, str(exc).splitlines()[0])]
+
+    try:
+        vault = Vault.load(path)
+    except SiattError as exc:
+        return [Check("vault", Status.FAIL, str(exc).splitlines()[0])]
+
+    names = vault.names()
+    checks.append(Check("vault", Status.OK, f"{len(names)} secret(s) in {path}"))
+
+    if repo := enclosing_git_repo(path):
+        checks.append(
+            Check(
+                "vault location",
+                Status.WARN,
+                f"{path} is inside the git work tree at {repo}; it must never be committed",
+            )
+        )
+
+    # An exported variable silently wins over a stored one (`vault.resolve`),
+    # which is the intended precedence and also the thing that makes people
+    # think a rotated key did not take.
+    if shadowed := [
+        name for name in names if os.environ.get(name) and os.environ[name] != vault.get(name)
+    ]:
+        checks.append(
+            Check(
+                "vault shadowed",
+                Status.WARN,
+                f"the environment overrides the stored {', '.join(sorted(shadowed))}",
+            )
+        )
+    return checks
+
+
+async def _memory_repo(cfg: Config, *, github: GitHubClient | None) -> list[Check]:
+    ltm = cfg.ltm
+    if not ltm.configured:
+        return [
+            Check("memory repo", Status.WARN, "not configured; run `siatt init`"),
+            Check("repo privacy", Status.SKIP, "no repo to check"),
+            Check("clone", Status.SKIP, "no repo to check"),
+        ]
+
+    checks = [Check("memory repo", Status.OK, str(ltm.repo))]
+    checks.append(_token(cfg))
+    checks.append(await _privacy(cfg, github=github))
+    checks.append(_clone(cfg))
+    return checks
+
+
+def _token(cfg: Config) -> Check:
+    if cfg.ltm.token():
+        return Check("github token", Status.OK, f"from {cfg.ltm.token_env}")
+    return Check(
+        "github token",
+        Status.WARN,
+        f"{cfg.ltm.token_env} is not set; Siatt cannot push memory or verify privacy",
+    )
+
+
+async def _privacy(cfg: Config, *, github: GitHubClient | None) -> Check:
+    try:
+        info = await _lookup(cfg, github=github)
+    except GitHubError as exc:
+        return Check("repo privacy", Status.WARN, f"could not check: {exc}")
+    if info is None:
+        return Check(
+            "repo privacy", Status.WARN, "unverifiable — not a GitHub owner/name, or no token"
+        )
+    if not info.private:
+        return Check("repo privacy", Status.FAIL, f"{info.full_name} is PUBLIC")
+    access = "write" if info.can_push else "read only — memory cannot be pushed"
+    status = Status.OK if info.can_push else Status.WARN
+    return Check("repo privacy", status, f"private, {access}")
+
+
+def _clone(cfg: Config) -> Check:
+    path = cfg.ltm.resolved_clone_path()
+    repo = GitRepo.at(path)
+    if not repo.exists:
+        return Check("clone", Status.WARN, f"{path} does not exist; run `siatt init`")
+    if not is_bootstrapped(path):
+        return Check("clone", Status.WARN, f"{path} has no memory skeleton; run `siatt init`")
+
+    notes = [f"{path} on {repo.current_branch()}"]
+    warn = False
+    if repo.is_dirty():
+        # A dirty working copy is how a crashed write announces itself, and the
+        # next `apply` has to stash it before it can do anything.
+        notes.append("uncommitted changes present")
+        warn = True
+    if ahead := repo.ahead_of_upstream():
+        # A write whose push failed keeps its local commit, which is right —
+        # history is the undo buffer, and losing the write would be worse. But
+        # an undo buffer on one disk is not one, and until #91 nothing said so:
+        # `ApplyResult.pushed` was read by nobody and the log record goes
+        # nowhere without a handler. This is the only place anybody looks.
+        notes.append(f"{ahead} commit(s) not pushed — memory written here exists only on this disk")
+        warn = True
+    if stashes := repo.stashes():
+        # The one place anybody would think to look. A write over uncommitted
+        # work parks it in a stash and says so in a log record nothing prints
+        # at default verbosity, so without this the edit is recoverable and
+        # nobody knows there is anything to recover (#78).
+        notes.append(f"{len(stashes)} stashed change(s) — `git -C {path} stash list` to see them")
+        warn = True
+    return Check("clone", Status.WARN if warn else Status.OK, ", ".join(notes))
+
+
+async def _store_checks(cfg: Config) -> list[Check]:
+    """Database health and lease state, on one connection."""
+    path = cfg.store.resolved()
+    try:
+        async with await Store.open(path) as store:
+            rows = await store.raw("SELECT name FROM schema_version ORDER BY name")
+            lease = await _lease(cfg, store)
+            index = await _index(cfg, store)
+    except SiattError as exc:
+        return [Check("database", Status.FAIL, f"{path}: {exc}")]
+    return [
+        Check("database", Status.OK, f"{path}, {len(rows)} migration(s) applied"),
+        lease,
+        index,
+    ]
+
+
+async def _index(cfg: Config, store: Store) -> Check:
+    if not cfg.ltm.configured:
+        return Check("index freshness", Status.SKIP, "no memory repo to index")
+    root = cfg.ltm.resolved_clone_path()
+    if not root.exists():
+        return Check("index freshness", Status.SKIP, "no clone to index")
+
+    index = MemoryIndex(store, root)
+    stats = await index.stats()
+    fresh = await index.freshness()
+    if fresh.stale:
+        return Check(
+            "index freshness",
+            Status.WARN,
+            f"{stats['chunks']} chunk(s) indexed, but the repo has moved on — run `siatt reindex`",
+        )
+    counted = f"{stats['chunks']} chunk(s) across {stats['memories']} memories"
+    if fresh.unreadable:
+        # Deliberately not "run `siatt reindex`". Reindex has already refused
+        # these and will refuse them again; the fix is to the file. The
+        # `manifest` check below says why each one failed.
+        return Check(
+            "index freshness",
+            Status.WARN,
+            f"{counted}; {len(fresh.unreadable)} file(s) cannot be indexed: "
+            + _listed(fresh.unreadable),
+        )
+    return Check("index freshness", Status.OK, counted)
+
+
+def _listed(paths: list[str], limit: int = 3) -> str:
+    """Name the first few and admit to the rest. One broken file is the common
+    case and deserves its name; forty should not fill the terminal."""
+    shown = ", ".join(paths[:limit])
+    extra = len(paths) - limit
+    return f"{shown} (+{extra} more)" if extra > 0 else shown
+
+
+def _manifest(cfg: Config) -> Check:
+    """Whether `.siatt/manifest.json` still describes the repo.
+
+    Index freshness alone reported a healthy system while the manifest was
+    empty, which is how #43 stayed invisible: retrieval reads SQLite and sees
+    every file, `memory_read` resolves through the manifest and sees only what
+    it lists.
+    """
+    if not cfg.ltm.configured:
+        return Check("manifest", Status.SKIP, "no memory repo")
+    root = cfg.ltm.resolved_clone_path()
+    if not root.exists():
+        return Check("manifest", Status.SKIP, "no clone")
+
+    try:
+        manifest = Manifest.load(root)
+    except MemoryError_ as exc:
+        return Check("manifest", Status.FAIL, str(exc))
+
+    rebuilt, problems = Manifest.rebuild(root)
+    if problems:
+        listed = ", ".join(f"{p.path} ({p.reason})" for p in problems[:3])
+        return Check("manifest", Status.WARN, f"{len(problems)} unreadable file(s): {listed}")
+    if not manifest.accounts_for(root):
+        missing = len(rebuilt) - len(manifest)
+        drift = f"{abs(missing)} memories {'missing from' if missing > 0 else 'stale in'} it"
+        return Check(
+            "manifest",
+            Status.WARN,
+            f"does not describe the repo — {drift}; run `siatt reindex`",
+        )
+    return Check("manifest", Status.OK, f"{len(manifest)} memories resolvable by id")
+
+
+async def _lease(cfg: Config, store: Store) -> Check:
+    if not cfg.ltm.configured:
+        return Check("write lease", Status.SKIP, "no memory repo to write to")
+
+    lock = cfg.ltm.resolved_clone_path() / ".git" / LOCK_FILENAME
+    row = await store.get_lease(LEASE_NAME)
+    if row is None:
+        return Check("write lease", Status.OK, "free")
+    if await stale_lease(store, lock) is not None:
+        # A row whose holder is gone. Harmless — the next write takes it over —
+        # but it means the previous run stopped in the middle of writing.
+        return Check(
+            "write lease",
+            Status.WARN,
+            f"left behind by {row['holder']} (job {row['job'] or 'unknown'}, "
+            f"since {row['acquired_at']}); the next write will take it over",
+        )
+    return Check(
+        "write lease", Status.OK, f"held by {row['holder']} for job {row['job'] or 'unknown'}"
+    )
+
+
+def _slack(cfg: Config) -> list[Check]:
+    """Both tokens, before the daemon needs them.
+
+    A Socket Mode daemon with one of the two tokens missing does not fail at
+    startup in any way a person reads as "the token is missing" — it fails on
+    connect, in a library, minutes into a deploy.
+    """
+    if not cfg.slack.configured:
+        return [Check("slack", Status.SKIP, "not configured; `siatt run` serves the terminal")]
+    missing = [
+        env
+        for env in (cfg.slack.app_token_env, cfg.slack.bot_token_env)
+        if env and not resolve(env)
+    ]
+    if missing:
+        return [Check("slack", Status.FAIL, f"{', '.join(missing)} not set")]
+    where = (
+        ", ".join(sorted(cfg.slack.allowed_channels))
+        if cfg.slack.allowed_channels
+        else "every channel Siatt is invited to"
+    )
+    return [Check("slack", Status.OK, f"socket mode; {where}")]
+
+
+def _embeddings(cfg: Config) -> list[Check]:
+    if "embedding" not in cfg.llm:
+        return [
+            Check("embeddings", Status.SKIP, "not configured; lexical retrieval remains active")
+        ]
+    if importlib.util.find_spec("sqlite_vec") is None:
+        return [Check("embeddings", Status.FAIL, "install the 'embeddings' extra for sqlite-vec")]
+    return [Check("embeddings", Status.OK, "sqlite-vec available; index rebuilds in background")]
+
+
+async def _lookup(cfg: Config, *, github: GitHubClient | None) -> RepoInfo | None:
+    """The repo as GitHub sees it, or None when it cannot be asked."""
+    spec = cfg.ltm.repo or ""
+    if not is_full_name(spec):
+        return None
+    token = cfg.ltm.token()
+    if not token and github is None:
+        return None
+
+    client = github or GitHubClient(token or "")
+    try:
+        return await client.get_repo(spec)
+    finally:
+        if github is None:
+            with contextlib.suppress(Exception):
+                await client.aclose()

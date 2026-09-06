@@ -16,5 +16,5 @@ jobs:
       - run: uv sync --all-extras --dev
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run mypy kasa
+      - run: uv run mypy siatt
       - run: uv run pytest -q

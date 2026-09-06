@@ -8,8 +8,8 @@ picked up the other's semantics.
 
 from __future__ import annotations
 
-from kasa.core.feedback import DOWN, SUSPECT, UP, Feedback
-from kasa.store import Store
+from siatt.core.feedback import DOWN, SUSPECT, UP, Feedback
+from siatt.store import Store
 
 ANSWER = "slack:T0TEAM:C0DEPLOY:1700000001.000000"
 JANE = "U0JANE"
@@ -46,7 +46,7 @@ async def test_a_thumbs_up_vouches_for_every_memory_behind_the_answer(store: Sto
     assert {str(row["memory_id"]) for row in await votes(store, "up")} == {FIRST, SECOND}
 
 
-async def test_a_reaction_on_a_message_kasa_did_not_post_does_nothing(store: Store) -> None:
+async def test_a_reaction_on_a_message_siatt_did_not_post_does_nothing(store: Store) -> None:
     """The common case in a busy channel: people react to each other."""
     result = await Feedback(store).record(
         source="slack", external_id="slack:T0TEAM:C0DEPLOY:9.9", verdict=UP, author=JANE
@@ -179,7 +179,7 @@ async def test_a_vote_reflect_has_already_spent_cannot_be_taken_back(store: Stor
 
 async def test_the_review_a_cross_raised_outlives_the_cross(store: Store) -> None:
     """It has already asked a person to look at something. Cancelling that
-    because the reaction was un-clicked would be Kasa closing the question,
+    because the reaction was un-clicked would be Siatt closing the question,
     which is the one thing raising a review says it will not do."""
     await answered(store, FIRST)
     feedback = Feedback(store)

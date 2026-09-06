@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kasa.memory.subject import MAX_SUBJECT_CHARS, normalize_subject
+from siatt.memory.subject import MAX_SUBJECT_CHARS, normalize_subject
 
 
 @pytest.mark.parametrize(
@@ -21,8 +21,8 @@ from kasa.memory.subject import MAX_SUBJECT_CHARS, normalize_subject
         ("A deploy pipeline", "deploy pipeline"),
         # An internal hyphen is part of the name; punctuation between words is
         # a separator, not something to close up.
-        ("kasa-ltm", "kasa-ltm"),
-        ("kasa/ltm", "kasa ltm"),
+        ("siatt-ltm", "siatt-ltm"),
+        ("siatt/ltm", "siatt ltm"),
     ],
 )
 def test_the_same_entity_normalizes_to_the_same_key(raw: str, expected: str) -> None:
@@ -32,7 +32,7 @@ def test_the_same_entity_normalizes_to_the_same_key(raw: str, expected: str) -> 
 def test_normalizing_twice_changes_nothing() -> None:
     """The store normalizes what a caller may already have normalized, so this
     has to be a fixed point or the key depends on how many layers it crossed."""
-    for raw in ("The Deploy Pipeline's", "Jane Doe", "a-b c", "kasa/ltm"):
+    for raw in ("The Deploy Pipeline's", "Jane Doe", "a-b c", "siatt/ltm"):
         once = normalize_subject(raw)
         assert normalize_subject(once) == once
 

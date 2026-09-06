@@ -12,13 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from kasa.config import MemorySettings
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.document import MemoryDoc, new_memory_id
-from kasa.memory.gitcmd import GitRepo
-from kasa.memory.ltm import CommitMeta, MemoryStore, Remove, Write
-from kasa.memory.manifest import Manifest
-from kasa.memory.patch import (
+from siatt.config import MemorySettings
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.document import MemoryDoc, new_memory_id
+from siatt.memory.gitcmd import GitRepo
+from siatt.memory.ltm import CommitMeta, MemoryStore, Remove, Write
+from siatt.memory.manifest import Manifest
+from siatt.memory.patch import (
     Archive,
     Create,
     Delete,
@@ -30,8 +30,8 @@ from kasa.memory.patch import (
     Update,
     parse_plan,
 )
-from kasa.redact import Redactor
-from kasa.store import Store
+from siatt.redact import Redactor
+from siatt.store import Store
 
 NOW = datetime(2026, 9, 3, tzinfo=UTC)
 LONG_AGO = NOW - timedelta(days=365)
@@ -216,8 +216,8 @@ def test_delete_removes_an_archived_memory_past_the_retention_floor(corpus: Corp
         "memory/../../escape.md",
         "memory/../.git/config",
         "/etc/passwd",
-        "memory/.kasa/manifest.json",
-        "memory/.kasa/schema.md",
+        "memory/.siatt/manifest.json",
+        "memory/.siatt/schema.md",
         "README.md",
         "memory/people/jane.sh",
     ],
@@ -433,7 +433,7 @@ def test_the_rejected_plan_is_logged_in_full(
     corpus: Corpus, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A rejection nobody can inspect is a rejection nobody can learn from."""
-    with caplog.at_level("WARNING", logger="kasa.memory.patch"), pytest.raises(PatchError):
+    with caplog.at_level("WARNING", logger="siatt.memory.patch"), pytest.raises(PatchError):
         corpus.compiler().compile([Update(id=new_memory_id(), body="x")], job="promote")
 
     assert "rejected a promote patch plan" in caplog.text
@@ -500,7 +500,7 @@ def test_an_over_long_path_is_rejected_not_raised(corpus: Corpus) -> None:
     back with an `OSError` — from the validator, whose whole contract is that
     arbitrary model output leaves here as a plan or as a `PatchError`.
 
-    `slugify` bounds the names Kasa derives; this bounds the ones a plan
+    `slugify` bounds the names Siatt derives; this bounds the ones a plan
     supplies for itself, which is the half a bounded slug cannot cover.
     """
     doc = MemoryDoc.new(type="fact", title="Short", body="b")

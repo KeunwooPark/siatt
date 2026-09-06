@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from kasa.core.events import EventError, InboundEvent
+from siatt.core.events import EventError, InboundEvent
 
 
 def test_an_event_round_trips_through_the_queue() -> None:

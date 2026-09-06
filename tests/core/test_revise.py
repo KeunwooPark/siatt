@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from kasa.core.revise import DELETED, EDITED, TOMBSTONE, Reviser, Revision
-from kasa.llm.types import Message
-from kasa.store import Store
+from siatt.core.revise import DELETED, EDITED, TOMBSTONE, Reviser, Revision
+from siatt.llm.types import Message
+from siatt.store import Store
 
 SESSION = "slack:T0TEAM:C0DEPLOY:1700000000.000100"
 EXTERNAL = "slack:T0TEAM:C0DEPLOY:1700000000.000100"
@@ -81,7 +81,7 @@ async def test_the_words_of_a_deleted_message_are_gone_from_the_database(store: 
 
 
 async def test_a_revision_for_a_message_nobody_stored_changes_nothing(store: Store) -> None:
-    """Most of a workspace's edits are to messages Kasa never read."""
+    """Most of a workspace's edits are to messages Siatt never read."""
     result = await Reviser(store).apply(Revision("slack:T0TEAM:C0OTHER:1.0", "anything"))
 
     assert not result.found

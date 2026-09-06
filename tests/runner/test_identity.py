@@ -12,14 +12,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from kasa.adapters.slack.identity import user_ref
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.document import MemoryDoc
-from kasa.memory.gitcmd import GitRepo
-from kasa.memory.ltm import MemoryStore
-from kasa.memory.manifest import Manifest
-from kasa.runner.identity import CLOSE, OPEN, Registrar
-from kasa.store import Store
+from siatt.adapters.slack.identity import user_ref
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.document import MemoryDoc
+from siatt.memory.gitcmd import GitRepo
+from siatt.memory.ltm import MemoryStore
+from siatt.memory.manifest import Manifest
+from siatt.runner.identity import CLOSE, OPEN, Registrar
+from siatt.store import Store
 
 TEAM = "T0TEAM"
 JANE = "U0JANE"
@@ -243,7 +243,7 @@ async def test_a_commit_that_never_landed_is_not_reported_as_mapped(
     job = registrar(clone, store)
 
     async def refuse(*_: object, **__: object) -> Any:
-        from kasa.memory.ltm import ApplyResult
+        from siatt.memory.ltm import ApplyResult
 
         return ApplyResult()
 

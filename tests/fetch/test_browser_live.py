@@ -2,7 +2,7 @@
 
 Marked `browser` and deselected by default, because CI does not install 650MB
 of Chromium to prove that Chromium works. What it does prove is the two claims
-`kasa/fetch/browser.py` rests on and cannot check against a fake:
+`siatt/fetch/browser.py` rests on and cannot check against a fake:
 
 - `--host-resolver-rules` is obeyed, so the pin is real rather than decorative;
 - a certificate is still verified against the *name* under that pin, so the pin
@@ -18,8 +18,8 @@ import socket
 
 import pytest
 
-from kasa.errors import FetchError
-from kasa.fetch.browser import BrowserRenderer
+from siatt.errors import FetchError
+from siatt.fetch.browser import BrowserRenderer
 
 pytestmark = [pytest.mark.browser, pytest.mark.external]
 

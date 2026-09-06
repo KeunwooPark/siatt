@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from tests.e2e.conftest import KasaRig
+from tests.e2e.conftest import SiattRig
 
 
 @pytest.mark.parametrize(
@@ -18,18 +18,18 @@ from tests.e2e.conftest import KasaRig
     ],
 )
 def test_provider_failures_have_deterministic_retry_and_diagnostics(
-    kasa_rig: KasaRig, prompt: str, diagnostic: str, attempts: int
+    siatt_rig: SiattRig, prompt: str, diagnostic: str, attempts: int
 ) -> None:
-    result = kasa_rig.run(f"{prompt}\n/quit\n")
+    result = siatt_rig.run(f"{prompt}\n/quit\n")
 
     # A failed turn does not crash the interactive process; it reports the
     # terminal cause and remains able to consume /quit.
     assert result.returncode == 0, result.stderr
     assert diagnostic in result.stdout
     assert result.stderr == ""
-    assert len(kasa_rig.server.requests) == attempts
+    assert len(siatt_rig.server.requests) == attempts
 
-    connection = sqlite3.connect(kasa_rig.database)
+    connection = sqlite3.connect(siatt_rig.database)
     try:
         calls = connection.execute("SELECT ok, error FROM llm_calls ORDER BY id").fetchall()
     finally:

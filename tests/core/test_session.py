@@ -6,12 +6,12 @@ import asyncio
 
 import pytest
 
-from kasa.core.events import InboundEvent
-from kasa.core.inbox import Dispatcher, Inbox
-from kasa.core.session import SessionActor, SessionOverflow, SessionRouter, Turn
-from kasa.errors import StoreError
-from kasa.llm.types import Message
-from kasa.store import Store
+from siatt.core.events import InboundEvent
+from siatt.core.inbox import Dispatcher, Inbox
+from siatt.core.session import SessionActor, SessionOverflow, SessionRouter, Turn
+from siatt.errors import StoreError
+from siatt.llm.types import Message
+from siatt.store import Store
 from tests.conftest import until
 
 

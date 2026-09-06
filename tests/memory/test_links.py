@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.document import MemoryDoc
-from kasa.memory.links import repair
-from kasa.memory.manifest import Manifest
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.document import MemoryDoc
+from siatt.memory.links import repair
+from siatt.memory.manifest import Manifest
 
 
 def corpus(root: Path, *docs: tuple[MemoryDoc, str | None]) -> Manifest:

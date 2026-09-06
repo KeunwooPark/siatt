@@ -10,16 +10,16 @@ from typing import Any
 
 import pytest
 
-from kasa.config import ReflectSettings
-from kasa.llm.registry import ModelRole, ProviderRegistry
-from kasa.llm.types import ChatRequest, ChatResponse, Delta, Message, TextBlock, Usage
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.document import MemoryDoc
-from kasa.memory.gitcmd import GitRepo
-from kasa.memory.ltm import MemoryStore
-from kasa.memory.manifest import Manifest
-from kasa.runner.reflect import Reflector, journal_path
-from kasa.store import Store
+from siatt.config import ReflectSettings
+from siatt.llm.registry import ModelRole, ProviderRegistry
+from siatt.llm.types import ChatRequest, ChatResponse, Delta, Message, TextBlock, Usage
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.document import MemoryDoc
+from siatt.memory.gitcmd import GitRepo
+from siatt.memory.ltm import MemoryStore
+from siatt.memory.manifest import Manifest
+from siatt.runner.reflect import Reflector, journal_path
+from siatt.store import Store
 
 #: 03:00 on the 5th — the hour the nightly cron fires, summarizing the 4th.
 NIGHT = datetime(2026, 9, 5, 3, 0, tzinfo=UTC)
@@ -198,7 +198,7 @@ async def test_the_journal_travels_as_untrusted_data(clone: Path, store: Store) 
 
     await reflector_for(clone, store, provider).run(now=NIGHT)
 
-    assert "KASA_UNTRUSTED_" in provider.prompts[0]
+    assert "SIATT_UNTRUSTED_" in provider.prompts[0]
     assert provider.requests[0].tools == ()
 
 
@@ -400,7 +400,7 @@ async def test_a_contradiction_between_memories_that_do_not_exist_is_dropped(
         )
     )
 
-    with caplog.at_level("WARNING", logger="kasa.runner.reflect"):
+    with caplog.at_level("WARNING", logger="siatt.runner.reflect"):
         result = await reflector_for(clone, store, provider, max_salience_updates=0).run(now=NIGHT)
 
     assert result.conflicts == []
@@ -456,7 +456,7 @@ async def test_a_digest_nobody_received_does_not_fail_the_night(
     await closed_episode(store, "Jane handed deploys to Priya.")
     provider = Scripted("a digest", NO_CONFLICTS)
 
-    with caplog.at_level("ERROR", logger="kasa.runner.reflect"):
+    with caplog.at_level("ERROR", logger="siatt.runner.reflect"):
         result = await reflector_for(clone, store, provider, notify=notify).run(now=NIGHT)
 
     assert result.journalled
@@ -482,7 +482,7 @@ async def test_the_night_is_one_commit(clone: Path, store: Store) -> None:
     commits = GitRepo.at(clone).run("log", "--format=%H", f"{before}..HEAD").split()
     assert len(commits) == 1
     assert result.journalled and result.rescored == 1
-    assert "Kasa-Job: reflect" in GitRepo.at(clone).run("log", "-1", "--format=%B")
+    assert "Siatt-Job: reflect" in GitRepo.at(clone).run("log", "-1", "--format=%B")
 
 
 async def test_a_journal_the_model_would_not_write_does_not_stop_the_rescore(

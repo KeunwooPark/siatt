@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from kasa.memory.document import (
+from siatt.memory.document import (
     MAX_SLUG_CHARS,
     Frontmatter,
     MemoryDoc,
@@ -15,7 +15,7 @@ from kasa.memory.document import (
     new_memory_id,
     slugify,
 )
-from kasa.memory.schema import render_schema_md
+from siatt.memory.schema import render_schema_md
 
 ID = "mem_01K8XQ4W2N7B6VJ3ZC9F0RTKME"
 

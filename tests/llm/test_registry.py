@@ -4,16 +4,16 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from kasa.errors import (
+from siatt.errors import (
     AuthError,
     BudgetExceededError,
     ContextOverflowError,
     LLMError,
     TransientError,
 )
-from kasa.llm.cost import CallRecord, CostMeter, Price, PriceBook
-from kasa.llm.registry import ModelRole, ProviderRegistry, RetryPolicy
-from kasa.llm.types import (
+from siatt.llm.cost import CallRecord, CostMeter, Price, PriceBook
+from siatt.llm.registry import ModelRole, ProviderRegistry, RetryPolicy
+from siatt.llm.types import (
     ChatRequest,
     ChatResponse,
     Delta,

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from kasa.core.agent import DEFAULT_SYSTEM_PROMPT
-from kasa.core.context import (
+from siatt.core.agent import DEFAULT_SYSTEM_PROMPT
+from siatt.core.context import (
     CONTEXT_HEADER,
     PINNED_HEADER,
     STATUS_HEADER,
@@ -11,16 +11,16 @@ from kasa.core.context import (
     ContextPacker,
     group_turns,
 )
-from kasa.errors import ConfigError
-from kasa.llm.tokens import Tokenizer, count_messages
-from kasa.llm.types import (
+from siatt.errors import ConfigError
+from siatt.llm.tokens import Tokenizer, count_messages
+from siatt.llm.types import (
     Message,
     TextBlock,
     ToolDef,
     ToolResultBlock,
     ToolUseBlock,
 )
-from kasa.untrusted import delimit
+from siatt.untrusted import delimit
 
 
 def exchange(n: int, size: int = 200) -> list[Message]:
@@ -70,7 +70,7 @@ def test_cacheable_prefix_is_byte_stable(tokenizer: Tokenizer) -> None:
     """
     packer = ContextPacker(tokenizer=tokenizer)
     kwargs = {
-        "system_prompt": "You are Kasa.",
+        "system_prompt": "You are Siatt.",
         "pinned": ["user prefers brevity"],
         "tools": (ToolDef(name="t", description="d", input_schema={"type": "object"}),),
     }
@@ -84,7 +84,7 @@ def test_cacheable_prefix_is_byte_stable(tokenizer: Tokenizer) -> None:
 
 def test_per_turn_material_stays_out_of_the_prefix(tokenizer: Tokenizer) -> None:
     packed = ContextPacker(tokenizer=tokenizer).pack(
-        system_prompt="You are Kasa.",
+        system_prompt="You are Siatt.",
         retrieved=["the user lives in Seoul"],
         episode_summary="They asked about the weather.",
     )
@@ -161,7 +161,7 @@ def test_a_turn_that_outgrows_the_budget_on_its_own_tool_output_still_fits(
     packer = ContextPacker(ContextBudget(total=20_000), tokenizer=tokenizer)
     turn = research_turn(rounds=12)
 
-    packed = packer.pack(system_prompt="You are Kasa.", recent=turn)
+    packed = packer.pack(system_prompt="You are Siatt.", recent=turn)
 
     recent = next(seg for seg in packed.trace.segments if seg.name == "recent")
     assert count_messages(packed.messages, tokenizer) > 0
@@ -176,7 +176,7 @@ def test_compaction_keeps_the_newest_results_verbatim(tokenizer: Tokenizer) -> N
     packer = ContextPacker(ContextBudget(total=20_000), tokenizer=tokenizer)
     turn = research_turn(rounds=12)
 
-    packed = packer.pack(system_prompt="You are Kasa.", recent=turn)
+    packed = packer.pack(system_prompt="You are Siatt.", recent=turn)
 
     results = [b.content for m in packed.messages for b in m.tool_results_in]
     assert "elided" in results[0]
@@ -187,7 +187,7 @@ def test_compaction_never_orphans_a_tool_result(tokenizer: Tokenizer) -> None:
     """Shortening content is allowed; changing the shape of the transcript is not."""
     packer = ContextPacker(ContextBudget(total=20_000), tokenizer=tokenizer)
 
-    packed = packer.pack(system_prompt="You are Kasa.", recent=research_turn(rounds=12))
+    packed = packer.pack(system_prompt="You are Siatt.", recent=research_turn(rounds=12))
 
     used = {b.id for m in packed.messages for b in m.tool_uses}
     answered = {b.tool_use_id for m in packed.messages for b in m.tool_results_in}
@@ -201,7 +201,7 @@ def test_compaction_leaves_the_stored_messages_alone(tokenizer: Tokenizer) -> No
     turn = research_turn(rounds=12)
     before = [b.content for m in turn for b in m.tool_results_in]
 
-    packer.pack(system_prompt="You are Kasa.", recent=turn)
+    packer.pack(system_prompt="You are Siatt.", recent=turn)
 
     assert [b.content for m in turn for b in m.tool_results_in] == before
 
@@ -210,7 +210,7 @@ def test_compaction_keeps_the_end_of_an_untrusted_block(tokenizer: Tokenizer) ->
     """Cutting only the tail would leave a delimiter that never closes.
 
     Everything after an unclosed `<<<BEGIN …>>>` reads as untrusted, which is
-    the rest of the turn and Kasa's own words with it.
+    the rest of the turn and Siatt's own words with it.
     """
     packer = ContextPacker(ContextBudget(total=20_000), tokenizer=tokenizer)
     turn = research_turn(rounds=12)
@@ -218,7 +218,7 @@ def test_compaction_keeps_the_end_of_an_untrusted_block(tokenizer: Tokenizer) ->
         [ToolResultBlock(tool_use_id="t0", content=delimit("a page " * 4000))]
     )
 
-    packed = packer.pack(system_prompt="You are Kasa.", recent=turn)
+    packed = packer.pack(system_prompt="You are Siatt.", recent=turn)
 
     first = next(b.content for m in packed.messages for b in m.tool_results_in)
     assert "elided" in first
@@ -231,7 +231,7 @@ def test_a_turn_inside_its_budget_is_not_compacted(tokenizer: Tokenizer) -> None
     packer = ContextPacker(ContextBudget(total=200_000), tokenizer=tokenizer)
     turn = research_turn(rounds=3)
 
-    packed = packer.pack(system_prompt="You are Kasa.", recent=turn)
+    packed = packer.pack(system_prompt="You are Siatt.", recent=turn)
 
     recent = next(seg for seg in packed.trace.segments if seg.name == "recent")
     assert recent.compacted == 0
@@ -244,7 +244,7 @@ def test_the_trace_tells_compacted_apart_from_dropped(tokenizer: Tokenizer) -> N
     """Different events, different fixes: lost history versus history in outline."""
     packer = ContextPacker(ContextBudget(total=20_000), tokenizer=tokenizer)
 
-    packed = packer.pack(system_prompt="You are Kasa.", recent=research_turn(rounds=12))
+    packed = packer.pack(system_prompt="You are Siatt.", recent=research_turn(rounds=12))
 
     recent = next(seg for seg in packed.trace.segments if seg.name == "recent")
     assert recent.dropped == 0
@@ -301,8 +301,8 @@ def test_pinned_memories_arrive_under_a_header_the_system_prompt_can_name(
     into system-prompt position.
     """
     packed = ContextPacker(tokenizer=tokenizer).pack(
-        system_prompt="You are Kasa.\n\nIf you do not know something, say so.",
-        pinned=["[[mem_01]] (memory/projects/kasa.md)\nKasa is a memory-native agent server"],
+        system_prompt="You are Siatt.\n\nIf you do not know something, say so.",
+        pinned=["[[mem_01]] (memory/projects/siatt.md)\nSiatt is a memory-native agent server"],
     )
 
     assert PINNED_HEADER in packed.system
@@ -313,9 +313,9 @@ def test_pinned_memories_arrive_under_a_header_the_system_prompt_can_name(
 
 def test_the_pinned_header_is_absent_when_nothing_is_pinned(tokenizer: Tokenizer) -> None:
     """An empty section is a section the model has to interpret."""
-    packed = ContextPacker(tokenizer=tokenizer).pack(system_prompt="You are Kasa.")
+    packed = ContextPacker(tokenizer=tokenizer).pack(system_prompt="You are Siatt.")
     assert PINNED_HEADER not in packed.system
-    assert packed.system == "You are Kasa."
+    assert packed.system == "You are Siatt."
 
 
 def test_the_system_prompt_frames_pinned_memory_by_name(tokenizer: Tokenizer) -> None:
@@ -334,14 +334,14 @@ def test_the_system_prompt_requires_tools_to_ground_unknown_information() -> Non
 def test_turn_status_leads_the_context_and_stays_out_of_the_working_block(
     tokenizer: Tokenizer,
 ) -> None:
-    """#201: it is Kasa's own fact about the turn, not recalled material.
+    """#201: it is Siatt's own fact about the turn, not recalled material.
 
     The system prompt tells the model to treat working context as background
     rather than as instructions. A budget line inside that block would be
     covered by that sentence, which is exactly the reading it must not get.
     """
     packed = ContextPacker(tokenizer=tokenizer).pack(
-        system_prompt="You are Kasa.",
+        system_prompt="You are Siatt.",
         retrieved=["Jane owns the deploy pipeline"],
         status="3 tool rounds are left in this turn.",
     )
@@ -355,7 +355,7 @@ def test_turn_status_leads_the_context_and_stays_out_of_the_working_block(
 def test_turn_status_stands_alone_when_nothing_was_recalled(tokenizer: Tokenizer) -> None:
     """No memory to report is not a reason to drop the turn's own status."""
     packed = ContextPacker(tokenizer=tokenizer).pack(
-        system_prompt="You are Kasa.", status="One tool round is left in this turn."
+        system_prompt="You are Siatt.", status="One tool round is left in this turn."
     )
 
     assert packed.context is not None
@@ -367,19 +367,19 @@ def test_turn_status_never_reaches_the_cacheable_prefix(tokenizer: Tokenizer) ->
     """It changes every pass; in the prefix it would void the cache every pass."""
     packer = ContextPacker(tokenizer=tokenizer)
 
-    first = packer.pack(system_prompt="You are Kasa.", status="8 tool rounds are left.")
-    second = packer.pack(system_prompt="You are Kasa.", status="1 tool round is left.")
+    first = packer.pack(system_prompt="You are Siatt.", status="8 tool rounds are left.")
+    second = packer.pack(system_prompt="You are Siatt.", status="1 tool round is left.")
 
     assert first.system == second.system
     assert STATUS_HEADER not in first.system
 
 
 def test_turn_status_is_charged_to_the_system_share(tokenizer: Tokenizer) -> None:
-    """Prompt Kasa wrote, not memory competing for a share."""
+    """Prompt Siatt wrote, not memory competing for a share."""
     packer = ContextPacker(tokenizer=tokenizer)
 
-    without = packer.pack(system_prompt="You are Kasa.")
-    with_status = packer.pack(system_prompt="You are Kasa.", status="8 tool rounds are left.")
+    without = packer.pack(system_prompt="You are Siatt.")
+    with_status = packer.pack(system_prompt="You are Siatt.", status="8 tool rounds are left.")
 
     assert without.trace.segments[0].name == "system"
     assert with_status.trace.segments[0].used > without.trace.segments[0].used
@@ -395,7 +395,7 @@ def test_the_system_prompt_frames_the_turn_status_by_name() -> None:
 def test_the_trace_separates_the_prompt_from_the_memory_in_it(tokenizer: Tokenizer) -> None:
     """`system 581/19200 kept=1` did not say how much of that was recalled text."""
     packed = ContextPacker(tokenizer=tokenizer).pack(
-        system_prompt="You are Kasa.",
+        system_prompt="You are Siatt.",
         pinned=["always answer in metric", "never round a currency amount"],
     )
 
@@ -409,7 +409,7 @@ def test_the_trace_separates_the_prompt_from_the_memory_in_it(tokenizer: Tokeniz
 def test_pinned_memories_still_live_in_the_cacheable_prefix(tokenizer: Tokenizer) -> None:
     """The point of keeping them there, which the fix must not cost."""
     packer = ContextPacker(tokenizer=tokenizer)
-    kwargs = {"system_prompt": "You are Kasa.", "pinned": ["user prefers brevity"]}
+    kwargs = {"system_prompt": "You are Siatt.", "pinned": ["user prefers brevity"]}
 
     first = packer.pack(**kwargs, recent=exchange(1), retrieved=["memory A"])
     second = packer.pack(**kwargs, recent=exchange(2), retrieved=["memory B"])

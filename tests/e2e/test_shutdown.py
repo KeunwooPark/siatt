@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 from aiohttp import WSMsgType, web
 
-from tests.e2e.conftest import KasaRig
+from tests.e2e.conftest import SiattRig
 
 
 def eventually[T](read: Callable[[], T], accept: Callable[[T], bool], *, timeout: float = 10) -> T:
@@ -179,23 +179,23 @@ def fake_slack() -> Iterator[FakeSlack]:
         slack.close()
 
 
-def daemon(rig: KasaRig, slack: FakeSlack) -> subprocess.Popen[str]:
+def daemon(rig: SiattRig, slack: FakeSlack) -> subprocess.Popen[str]:
     if "[slack]" not in rig.config.read_text():
         with rig.config.open("a") as config:
             config.write(
-                '\n[slack]\napp_token_env = "KASA_E2E_SLACK_APP"\n'
-                'bot_token_env = "KASA_E2E_SLACK_BOT"\nstream = false\n'
+                '\n[slack]\napp_token_env = "SIATT_E2E_SLACK_APP"\n'
+                'bot_token_env = "SIATT_E2E_SLACK_BOT"\nstream = false\n'
                 f'api_url = "{slack.api_url}"\n'
             )
     env = rig.env | {
-        "KASA_E2E_SLACK_APP": "xapp-e2e",
-        "KASA_E2E_SLACK_BOT": "xoxb-e2e",
+        "SIATT_E2E_SLACK_APP": "xapp-e2e",
+        "SIATT_E2E_SLACK_BOT": "xoxb-e2e",
     }
     return subprocess.Popen(
         [
             sys.executable,
             "-m",
-            "kasa.cli",
+            "siatt.cli",
             "run",
             "--slack",
             "--config",
@@ -208,7 +208,7 @@ def daemon(rig: KasaRig, slack: FakeSlack) -> subprocess.Popen[str]:
     )
 
 
-def state(rig: KasaRig, event_id: str) -> str | None:
+def state(rig: SiattRig, event_id: str) -> str | None:
     if not rig.database.exists():
         return None
     connection = sqlite3.connect(rig.database)
@@ -227,15 +227,15 @@ def stop(process: subprocess.Popen[str]) -> tuple[str, str]:
     return process.communicate(timeout=10)
 
 
-def wait_for_provider(process: subprocess.Popen[str], rig: KasaRig) -> None:
+def wait_for_provider(process: subprocess.Popen[str], rig: SiattRig) -> None:
     if rig.server.request_started.wait(timeout=5):
         return
     stdout, stderr = stop(process)
     raise AssertionError(f"provider was not called; daemon output:\n{stdout}\n{stderr}")
 
 
-def test_sigterm_stops_an_idle_daemon_cleanly(kasa_rig: KasaRig, fake_slack: FakeSlack) -> None:
-    process = daemon(kasa_rig, fake_slack)
+def test_sigterm_stops_an_idle_daemon_cleanly(siatt_rig: SiattRig, fake_slack: FakeSlack) -> None:
+    process = daemon(siatt_rig, fake_slack)
     assert fake_slack.connected.wait(timeout=5)
 
     stdout, stderr = stop(process)
@@ -245,44 +245,44 @@ def test_sigterm_stops_an_idle_daemon_cleanly(kasa_rig: KasaRig, fake_slack: Fak
 
 
 def test_sigterm_drains_an_active_turn_and_keeps_it_done(
-    kasa_rig: KasaRig, fake_slack: FakeSlack
+    siatt_rig: SiattRig, fake_slack: FakeSlack
 ) -> None:
-    process = daemon(kasa_rig, fake_slack)
+    process = daemon(siatt_rig, fake_slack)
     assert fake_slack.connected.wait(timeout=5)
     fake_slack.event(event_id="Ev101", text="Hold this turn.")
-    wait_for_provider(process, kasa_rig)
+    wait_for_provider(process, siatt_rig)
 
     process.send_signal(signal.SIGTERM)
-    kasa_rig.server.release_request.set()
+    siatt_rig.server.release_request.set()
     stdout, stderr = process.communicate(timeout=10)
 
     assert process.returncode == 0, (stdout, stderr)
-    assert eventually(lambda: state(kasa_rig, "Ev101"), lambda value: value == "done") == "done"
+    assert eventually(lambda: state(siatt_rig, "Ev101"), lambda value: value == "done") == "done"
     assert [post["text"] for post in fake_slack.posts] == ["E2E reply: Hold this turn."]
 
 
 def test_failed_work_is_recoverable_after_a_sigterm_restart(
-    kasa_rig: KasaRig, fake_slack: FakeSlack
+    siatt_rig: SiattRig, fake_slack: FakeSlack
 ) -> None:
-    first = daemon(kasa_rig, fake_slack)
+    first = daemon(siatt_rig, fake_slack)
     assert fake_slack.connected.wait(timeout=5)
     fake_slack.event(event_id="Ev102", text="Hold this turn.")
-    wait_for_provider(first, kasa_rig)
+    wait_for_provider(first, siatt_rig)
 
     first.send_signal(signal.SIGTERM)
-    kasa_rig.server.fail_held_request = True
-    kasa_rig.server.release_request.set()
+    siatt_rig.server.fail_held_request = True
+    siatt_rig.server.release_request.set()
     stdout, stderr = first.communicate(timeout=10)
 
     assert first.returncode == 0, (stdout, stderr)
-    assert state(kasa_rig, "Ev102") == "pending"
+    assert state(siatt_rig, "Ev102") == "pending"
 
-    kasa_rig.server.fail_held_request = False
+    siatt_rig.server.fail_held_request = False
     fake_slack.connected.clear()
-    second = daemon(kasa_rig, fake_slack)
+    second = daemon(siatt_rig, fake_slack)
     assert fake_slack.connected.wait(timeout=5)
-    eventually(lambda: state(kasa_rig, "Ev102"), lambda value: value == "done")
+    eventually(lambda: state(siatt_rig, "Ev102"), lambda value: value == "done")
     stdout, stderr = stop(second)
 
     assert second.returncode == 0, (stdout, stderr)
-    assert state(kasa_rig, "Ev102") == "done"
+    assert state(siatt_rig, "Ev102") == "done"

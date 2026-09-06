@@ -12,8 +12,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from kasa.errors import Blocked, FetchError
-from kasa.fetch.client import SHELL_SCRIPTS, USER_AGENT, WebFetcher
+from siatt.errors import Blocked, FetchError
+from siatt.fetch.client import SHELL_SCRIPTS, USER_AGENT, WebFetcher
 
 PUBLIC = "93.184.216.34"
 

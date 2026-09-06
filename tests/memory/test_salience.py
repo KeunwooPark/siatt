@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from kasa.memory.salience import Decay, age_of
+from siatt.memory.salience import Decay, age_of
 
 DECAY = Decay()
 

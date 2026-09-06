@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from kasa.runner.cron import HOURLY, NIGHTLY, WEEKLY, Cron, CronError
+from siatt.runner.cron import HOURLY, NIGHTLY, WEEKLY, Cron, CronError
 
 NOW = datetime(2026, 9, 3, 10, 30, tzinfo=UTC)  # a Thursday
 
@@ -144,7 +144,7 @@ def test_a_zone_name_is_enough() -> None:
 
 
 def test_no_zone_is_utc_and_unchanged() -> None:
-    """The six jobs that ship with Kasa pass no zone and must not move."""
+    """The six jobs that ship with Siatt pass no zone and must not move."""
     assert Cron.parse(NIGHTLY).tz is None
     assert fires(NIGHTLY) == Cron.parse(NIGHTLY, tz="UTC").next_after(NOW)
 

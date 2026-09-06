@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kasa.memory import bootstrap as bootstrap_module
-from kasa.memory.bootstrap import bootstrap, is_bootstrapped, refresh_schema
-from kasa.memory.layout import (
+from siatt.memory import bootstrap as bootstrap_module
+from siatt.memory.bootstrap import bootstrap, is_bootstrapped, refresh_schema
+from siatt.memory.layout import (
     INDEX_PATH,
     MANIFEST_PATH,
     SCHEMA_PATH,

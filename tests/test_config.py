@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from kasa.config import (
+from siatt.config import (
     BrowserSettings,
     Config,
     FetchSettings,
@@ -14,23 +14,23 @@ from kasa.config import (
     load_config,
     write_config,
 )
-from kasa.core.agent import AgentConfig
-from kasa.errors import ConfigError
-from kasa.llm.registry import ModelRole
+from siatt.core.agent import AgentConfig
+from siatt.errors import ConfigError
+from siatt.llm.registry import ModelRole
 
 
 def test_env_only_config_needs_just_a_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """First run should be `export ANTHROPIC_API_KEY=... && kasa run`."""
+    """First run should be `export ANTHROPIC_API_KEY=... && siatt run`."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("KASA_CHAT_MODEL", raising=False)
+    monkeypatch.delenv("SIATT_CHAT_MODEL", raising=False)
 
     cfg = config_from_env()
     assert cfg.llm["chat"].kind == "anthropic"
 
 
 def test_no_key_still_yields_a_usable_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`kasa db migrate` and `kasa cost` must work before any model is set up."""
+    """`siatt db migrate` and `siatt cost` must work before any model is set up."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -139,7 +139,7 @@ def test_malformed_toml_reports_the_path(tmp_path: Path) -> None:
 
 
 def test_config_dump_contains_no_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`kasa config` output should be safe to paste into an issue."""
+    """`siatt config` output should be safe to paste into an issue."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "super-secret")
     cfg = config_from_env()
     assert "super-secret" not in str(cfg.redacted())
@@ -152,8 +152,8 @@ def _full_config() -> Config:
     return Config.model_validate(
         {
             "ltm": {
-                "repo": "someone/kasa-memory",
-                "clone_path": "~/.kasa/ltm",
+                "repo": "someone/siatt-memory",
+                "clone_path": "~/.siatt/ltm",
                 "branch": "trunk",
                 "token_env": "GH_TOKEN",
                 "supervised": ["forget", "reorganize"],
@@ -244,8 +244,8 @@ def test_an_unusable_context_budget_is_rejected_when_the_config_is_read(
     tmp_path: Path, stanza: str, expected: str
 ) -> None:
     """#76. `ContextBudget` validated in `__post_init__`, and nothing built one
-    until a command built a packer — so `kasa config` and `kasa doctor` were
-    green on a config `kasa run` would not start with."""
+    until a command built a packer — so `siatt config` and `siatt doctor` were
+    green on a config `siatt run` would not start with."""
     path = tmp_path / "config.toml"
     path.write_text(stanza)
 
@@ -268,7 +268,7 @@ def test_the_default_budget_is_still_valid(tmp_path: Path) -> None:
 def write_relative(tmp_path: Path) -> Path:
     path = tmp_path / "config.toml"
     path.write_text(
-        '[ltm]\nrepo = "someone/mem"\nclone_path = "ltm-here"\n\n[store]\npath = "kasa-here.db"\n'
+        '[ltm]\nrepo = "someone/mem"\nclone_path = "ltm-here"\n\n[store]\npath = "siatt-here.db"\n'
     )
     return path
 
@@ -277,7 +277,7 @@ def test_a_relative_path_is_read_against_the_config_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#88. Against the working directory instead, the same config file meant a
-    different memory repo and a different database depending on where Kasa was
+    different memory repo and a different database depending on where Siatt was
     started — and the second one bootstrapped an empty world and called it
     healthy."""
     config = write_relative(tmp_path)
@@ -287,11 +287,11 @@ def test_a_relative_path_is_read_against_the_config_file(
     monkeypatch.chdir(elsewhere)
     cfg = load_config(config)
 
-    assert cfg.store.resolved() == tmp_path / "kasa-here.db"
+    assert cfg.store.resolved() == tmp_path / "siatt-here.db"
     assert cfg.ltm.resolved_clone_path() == tmp_path / "ltm-here"
 
 
-def test_it_does_not_matter_where_kasa_was_started(
+def test_it_does_not_matter_where_siatt_was_started(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = write_relative(tmp_path)
@@ -305,7 +305,7 @@ def test_it_does_not_matter_where_kasa_was_started(
     assert len(seen) == 1
     # A relative path is also "the same" from everywhere, and means something
     # different at each one. Absolute is the property that makes it true.
-    assert seen.pop() == tmp_path / "kasa-here.db"
+    assert seen.pop() == tmp_path / "siatt-here.db"
 
 
 def test_a_relative_config_argument_still_anchors_absolutely(
@@ -319,15 +319,15 @@ def test_a_relative_config_argument_still_anchors_absolutely(
     resolved = load_config(Path("config.toml")).store.resolved()
 
     assert resolved.is_absolute()
-    assert resolved == tmp_path / "kasa-here.db"
+    assert resolved == tmp_path / "siatt-here.db"
 
 
-@pytest.mark.parametrize("value", ["~/.kasa/ltm", "/var/lib/kasa/ltm"])
+@pytest.mark.parametrize("value", ["~/.siatt/ltm", "/var/lib/siatt/ltm"])
 def test_a_path_that_is_already_absolute_is_left_exactly_as_written(
     tmp_path: Path, value: str
 ) -> None:
     """`~` included: it is unambiguous as it stands, and rewriting it would mean
-    `kasa init` could not round-trip the file it just wrote."""
+    `siatt init` could not round-trip the file it just wrote."""
     path = tmp_path / "config.toml"
     path.write_text(f'[ltm]\nrepo = "someone/mem"\nclone_path = "{value}"\n')
 
@@ -352,7 +352,7 @@ def test_an_unconfigured_search_writes_no_section(tmp_path: Path) -> None:
 
 
 def test_a_configured_search_survives_the_round_trip(tmp_path: Path) -> None:
-    cfg = Config(search=SearchSettings(kind="brave", key_env="KASA_BRAVE", max_results=3))
+    cfg = Config(search=SearchSettings(kind="brave", key_env="SIATT_BRAVE", max_results=3))
     path = tmp_path / "config.toml"
     write_config(cfg, path)
 
@@ -362,10 +362,10 @@ def test_a_configured_search_survives_the_round_trip(tmp_path: Path) -> None:
 def test_a_search_key_is_never_written_into_the_config(tmp_path: Path) -> None:
     """Only the name of the variable, as with every other credential."""
     path = tmp_path / "config.toml"
-    write_config(Config(search=SearchSettings(kind="brave", key_env="KASA_BRAVE")), path)
+    write_config(Config(search=SearchSettings(kind="brave", key_env="SIATT_BRAVE")), path)
 
     written = path.read_text()
-    assert "KASA_BRAVE" in written
+    assert "SIATT_BRAVE" in written
     assert "cost_per_call_usd" in written, "written in full, so the price is visible to edit"
 
 
@@ -387,7 +387,7 @@ def test_fetching_is_on_without_being_asked_for() -> None:
 
 def test_fetching_can_be_turned_off_entirely() -> None:
     """For an install that wants the outbound surface gone. What makes it safe
-    is `kasa/fetch/guard.py`; this is for people who want neither."""
+    is `siatt/fetch/guard.py`; this is for people who want neither."""
     assert not Config(fetch=FetchSettings(enabled=False)).fetch.enabled
 
 

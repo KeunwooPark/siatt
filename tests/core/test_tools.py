@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
-from kasa.core.tools import Tool, ToolContext, ToolRegistry, builtin_tools
-from kasa.llm.types import ToolUseBlock
+from siatt.core.tools import Tool, ToolContext, ToolRegistry, builtin_tools
+from siatt.llm.types import ToolUseBlock
 
 SCHEMA: dict[str, Any] = {
     "type": "object",

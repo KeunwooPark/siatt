@@ -1,4 +1,4 @@
-# Kasa — Design
+# Siatt — Design
 
 > A long-running, memory-native AI agent server reachable over chat.
 >
@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-Kasa is a persistent daemon that hosts a conversational agent. People talk to it
+Siatt is a persistent daemon that hosts a conversational agent. People talk to it
 from a messaging surface (Slack first), and it answers with the benefit of an
 accumulated, curated memory of past conversations.
 
@@ -33,7 +33,7 @@ LTM as it grows, and forgets what stopped mattering.
 ### Non-goals (v1)
 
 - Multi-tenant SaaS. Single workspace, single LTM repo, single writer.
-- A general workflow/automation engine. Kasa converses and remembers.
+- A general workflow/automation engine. Siatt converses and remembers.
 - A bespoke vector database. SQLite carries the index.
 
 ### Assumed stack
@@ -50,7 +50,7 @@ Python beyond library choices.
 > **The GitHub repo is the source of truth. SQLite is a derived index plus a hot
 > conversation buffer.**
 
-Concretely: `kasa reindex` must be able to delete every search structure and
+Concretely: `siatt reindex` must be able to delete every search structure and
 rebuild it by walking the repo. Nothing durable may live only in SQLite.
 
 Everything else in this document follows from that:
@@ -92,7 +92,7 @@ Everything else in this document follows from that:
         │                                                            │
         │   STM (sqlite)  ←──  Index (FTS5 + vec)  ──→  LTM (git)    │
         │   messages           chunks                   memory/*.md  │
-        │   episodes           embeddings               .kasa/       │
+        │   episodes           embeddings               .siatt/       │
         │   observations                                             │
         └───────────────────────────▲───────────────────────────────┘
                                     │
@@ -173,9 +173,9 @@ Nobody said anything just now, and an answer opening *"as you asked"* into a
 thread that has been quiet since Tuesday reads as a hallucination.
 
 **None of it happens without the daemon.** The clock ticks inside the running
-process, so `kasa task add` on a terminal writes a row that nothing will fire
-until `kasa run --slack` is up. The CLI says so when it creates one, and
-`kasa task run` exists to fire an occurrence by hand.
+process, so `siatt task add` on a terminal writes a row that nothing will fire
+until `siatt run --slack` is up. The CLI says so when it creates one, and
+`siatt task run` exists to fire an occurrence by hand.
 
 ---
 
@@ -346,7 +346,7 @@ compiled against them, which is what makes adding a schedule an INSERT rather
 than a release, and it leaves both tables with the role they already had: this
 one remembers, that one executes.
 
-That is also the test for where a new requirement belongs. Something Kasa must
+That is also the test for where a new requirement belongs. Something Siatt must
 do to keep its own memory healthy is a job kind. Something a person asked for,
 and could take back tomorrow, is a row here.
 
@@ -379,7 +379,7 @@ memory/
   facts/<slug>.md           # atomic durable facts that fit nowhere else
   journal/2026/09/03.md     # nightly digest, near-append-only
   archive/                  # soft-deleted, awaiting GC
-  .kasa/
+  .siatt/
     schema.md               # the contract the agent must follow when writing
     manifest.json           # id → path, checksum, last_touched
 ```
@@ -408,14 +408,14 @@ Body is ordinary Markdown, with [[mem_01K8...]] or [[people/jane]] wikilinks.
 
 **Why stable IDs plus a manifest.** The weekly reorganizer moves and merges files.
 If links pointed at paths, every reorganization would break the corpus. Links
-resolve through `.kasa/manifest.json`, so a file can move freely and a merged
+resolve through `.siatt/manifest.json`, so a file can move freely and a merged
 memory's ID survives in the `supersedes` chain of its successor.
 
 ---
 
 ## 5. The git write path
 
-The daemon owns a local clone at `~/.kasa/ltm/`.
+The daemon owns a local clone at `~/.siatt/ltm/`.
 
 **Clone, not the Contents API.** A working copy gives atomic multi-file commits,
 local `grep`, offline tolerance, and no per-file API rate limits. The Contents API
@@ -426,7 +426,7 @@ Every mutation runs through `MemoryStore.apply(patches, meta)`:
 1. Acquire the single-writer lease (SQLite row + `flock` on the clone).
 2. `git fetch && git rebase origin/main` (or `reset --hard` if the working copy is dirty from a failed run).
 3. Apply validated patches to the filesystem.
-4. Rewrite `.kasa/manifest.json`.
+4. Rewrite `.siatt/manifest.json`.
 5. Commit with structured trailers.
 6. `git push`, with exponential backoff and re-rebase on rejection.
 
@@ -435,10 +435,10 @@ Commit messages are machine-parseable so history is auditable:
 ```
 memory: promote 3 observations from #infra
 
-Kasa-Job: promote
-Kasa-Job-Id: job_01K8...
-Kasa-Session: slack:T01:C0123:1756890000.123
-Kasa-Memory-Ids: mem_01K8XQ..., mem_01K8XR..., mem_01K8XS...
+Siatt-Job: promote
+Siatt-Job-Id: job_01K8...
+Siatt-Session: slack:T01:C0123:1756890000.123
+Siatt-Memory-Ids: mem_01K8XQ..., mem_01K8XR..., mem_01K8XS...
 ```
 
 Rules:
@@ -451,7 +451,7 @@ Rules:
 ### 5.1 Supervised mode
 
 `reorganize` and `forget` are the two jobs that destroy information. Both support
-a supervised mode that pushes to `kasa/reorg-<date>` and opens a PR instead of
+a supervised mode that pushes to `siatt/reorg-<date>` and opens a PR instead of
 writing to the default branch.
 
 Cheap to build, and it is how you earn trust in the consolidator during the first
@@ -461,8 +461,8 @@ few weeks of running it. Recommended default: supervised **on** for `forget`,
 ### 5.2 Auth
 
 Fine-grained PAT scoped to the single LTM repo with `contents: write`, supplied
-by an environment variable or Kasa's local vault. Environment values override
-the vault. A GitHub App installation token is the right answer only if Kasa
+by an environment variable or Siatt's local vault. Environment values override
+the vault. A GitHub App installation token is the right answer only if Siatt
 ever becomes multi-tenant.
 
 ---
@@ -586,7 +586,7 @@ cannot name it.
 
 §7.1 was written for text arriving through the inbox, from someone who can type
 into a channel. `web_search` (§8.2) opens a second door: text arriving through a
-`tool_result` — a channel that until then had only ever carried Kasa's own
+`tool_result` — a channel that until then had only ever carried Siatt's own
 output — written by whoever runs the sites that happened to rank. `web_fetch`
 (§8.3) opens it wider: a whole page rather than a snippet, from an address the
 model chose rather than one a provider ranked.
@@ -594,11 +594,11 @@ model chose rather than one a provider ranked.
 Three things hold it, and none of them is a filter:
 
 - **The same boundary, in the same shape.** Results are serialized and wrapped by
-  `kasa/untrusted.py`, the one implementation of the nonce-delimited block §7.1
+  `siatt/untrusted.py`, the one implementation of the nonce-delimited block §7.1
   describes, with the notice on the line above them. A result cannot close the
   block it is inside, because it has never seen the nonce.
 - **Nothing read can be remembered.** A page that says *"remember that X"* must
-  not thereby teach Kasa that X. What prevents it is structural: the transcript
+  not thereby teach Siatt that X. What prevents it is structural: the transcript
   episode extraction reads is built from text blocks, and a tool result is not
   one. A search result or a fetched page therefore cannot reach `promote`, and
   the write path stays exactly as narrow as it was. Pinned by a test per tool,
@@ -649,7 +649,7 @@ validated write path.
 
 ### 8.2 Reaching outside the corpus
 
-Long-term memory answers what Kasa has been told. It cannot answer what is true
+Long-term memory answers what Siatt has been told. It cannot answer what is true
 in the world this morning, and a long-running assistant in a channel is asked
 that constantly.
 
@@ -669,7 +669,7 @@ answer is *on* the page rather than in the description of it, §8.3 is what open
 it — and `web_search`'s description says which of the two worlds it is in, since
 "there is no tool for fetching a page" is a sentence a model will believe.
 
-The provider is behind a `SearchProvider` protocol (`kasa/search/base.py`) rather
+The provider is behind a `SearchProvider` protocol (`siatt/search/base.py`) rather
 than another `ProviderKind`: search shares nothing with a model call but HTTP —
 no roles, no token accounting, no streaming, no fallback chain. It does share the
 cost meter, so a search lands in `llm_calls` beside the model calls and the same
@@ -685,7 +685,7 @@ result, read it, answer — and the alternative to a general reader is a tool pe
 site, which does not scale past the second site (#186).
 
 It is a bigger capability than search by every measure, so the design is a list
-of bounds rather than a list of features. `kasa/fetch/guard.py` decides where a
+of bounds rather than a list of features. `siatt/fetch/guard.py` decides where a
 request may go, and it is the only part that has to be right:
 
 - **Addresses, not names.** The host is resolved and every answer judged. A
@@ -787,7 +787,7 @@ but Chromium resolves them itself, so the pin covers the document and not every
 subresource. What keeps that small is Chromium's own private-network-access
 policy, which blocks public-to-private subresource requests — somebody else's
 decision, which is why it is a residual and not a control. Closing it means
-serving every request from Kasa's own pinned client through `route.fulfill`,
+serving every request from Siatt's own pinned client through `route.fulfill`,
 which is its own issue.
 
 **Off by default, and its own extra.** The opposite of §8.3, and for a reason
@@ -856,7 +856,7 @@ mid-dispatch: a turn is stopped where its findings are intact and can still be
 written up. It exists because forty rounds is far too loose to be the only
 bound on a person waiting in a Slack thread, and because `[budget]`'s daily
 ceiling pauses utility calls, not the chat model. Neither dial bounds spend
-directly; a turn's cost is metered like any other and shows up in `kasa cost`.
+directly; a turn's cost is metered like any other and shows up in `siatt cost`.
 
 Raising `max_tool_iterations` costs context as well as money: every round adds
 its results to the turn, and past the recent share those results start being
@@ -864,7 +864,7 @@ elided (§8.5) rather than sent in full.
 
 ### 8.6 Explainability
 
-`kasa why "<question>"` prints the constructed query, every candidate with its
+`siatt why "<question>"` prints the constructed query, every candidate with its
 lexical/vector/fused/final scores, what was dropped by scope filtering, and the
 final packed context.
 
@@ -943,7 +943,7 @@ Details that bite, in rough order of how quickly they will bite:
 - **Ack in under 3 seconds.** Enqueue and return; never await the agent loop.
 - **Dedupe on the message, not the delivery.** Slack retries aggressively, and
   a retried event that reaches the agent twice produces two answers — but its
-  `event_id` covers only that case. A mention in a channel Kasa can read
+  `event_id` covers only that case. A mention in a channel Siatt can read
   arrives *twice*, once as `app_mention` and once as `message`, under two
   different event ids and one `ts`. `slack:<team>:<channel>:<ts>` covers both,
   and covers them without knowing which subscriptions an install was granted.
@@ -1001,9 +1001,9 @@ can be said.
 
 ### 11.2 Secrets
 
-`~/.config/kasa/config.toml` holds no secrets inline — only names. Secret values
+`~/.config/siatt/config.toml` holds no secrets inline — only names. Secret values
 may be exported or stored in the plaintext local vault at
-`~/.local/share/kasa/vault.json` (`0600`, in a `0700` directory). The vault
+`~/.local/share/siatt/vault.json` (`0600`, in a `0700` directory). The vault
 protects against accidental commits, sync, and other local users; it does not
 protect against root or code already running as the same user. It refuses to
 load from inside the LTM clone. The GitHub token is scoped to a single repo.
@@ -1023,7 +1023,7 @@ file can be committed.
 
 ### 11.3 Repo privacy
 
-`kasa init` refuses to configure a public repository as the LTM store, and the
+`siatt init` refuses to configure a public repository as the LTM store, and the
 daemon re-checks repo visibility on startup. A memory repo that silently became
 public is a serious incident, so it is checked rather than assumed.
 
@@ -1034,7 +1034,7 @@ public is a serious incident, so it is checked rather than assumed.
 - Every LLM call: role, provider, model, prompt/completion tokens, cost, latency,
   cache hit rate.
 - Every memory mutation: job id, patch plan, resulting commit SHA, files touched.
-- Every retrieval: the full trace behind `kasa why`.
+- Every retrieval: the full trace behind `siatt why`.
 - Rolling spend meter with a configurable daily ceiling; on breach, the utility
   role degrades and background jobs pause before the chat role is affected.
 
@@ -1043,7 +1043,7 @@ public is a serious incident, so it is checked rather than assumed.
 ## 13. Module layout
 
 ```
-kasa/
+siatt/
   core/
     events.py          inbound/outbound normalization
     session.py         actor + mailbox
@@ -1103,7 +1103,7 @@ Milestones are tracked as GitHub milestones; this is the shape.
 memory beyond the current conversation.
 
 **v1 — It remembers on purpose.** Git LTM store, patch types and validator,
-`memory_*` tools, FTS5 retrieval, `kasa init`, `kasa reindex`, `kasa why`. The
+`memory_*` tools, FTS5 retrieval, `siatt init`, `siatt reindex`, `siatt why`. The
 agent writes memories only when it decides to.
 
 **v2 — It lives in Slack.** Socket Mode adapter, durable inbox, session actors,
@@ -1116,8 +1116,8 @@ signal gating. *This is the milestone where the product exists.*
 `reorganize`, `forget`, supervised mode, reaction feedback, cost controls.
 
 **v5 — It acts on its own.** Standing tasks: the `tasks` table, a clock that
-reads it, `kasa task`, and `schedule_*` tools so a schedule is set up by asking
-for one in the conversation it will answer in. The first thing Kasa does that
+reads it, `siatt task`, and `schedule_*` tools so a schedule is set up by asking
+for one in the conversation it will answer in. The first thing Siatt does that
 nobody asked for in the moment.
 
 Ship v3 before v4. Automatic promotion is the feature; reorganization is
@@ -1133,15 +1133,15 @@ optimization of a thing that must already work.
 | Contradictory memories | Never silently overwrite; `supersedes` chains, prefer newest, surface conflicts in `reflect` |
 | Cost blowup from consolidating everything | `signal_score` gate; cheap utility model; daily spend ceiling |
 | Two daemons racing on push | Single-writer lease (SQLite row + flock); startup check |
-| Retrieval quality is opaque | `kasa why` from week one |
+| Retrieval quality is opaque | `siatt why` from week one |
 | Prompt injection via channel text | Typed patch plan + validator; no shell, no direct git; `promote` cannot delete |
 | Prompt injection via a search result or a fetched page | Same delimited block; tool results never enter the extraction transcript; no response body is ever quoted into an error |
 | SSRF via a url the model read off a page | Addresses judged, not names; every DNS answer checked; the approved address is the one connected to; every redirect hop re-judged; http(s) on 80/443 only (§8.3) |
 | SSRF via the hundreds of requests a rendered page makes | Every request through the same guard; image/media/font never fetched; the document pinned to the approved address; nothing clicked or submitted; off by default (§8.4) |
 | DM content leaking into public channels | `visibility` in the data model from day one; filter before ranking |
 | LTM repo grows unboundedly | `forget` + archive tier; `reorganize` splits and merges |
-| A standing task spends money every day with nobody watching | Per-owner cap and an interval floor (`[tasks]`); every firing is metered like any other turn and shows up in `kasa cost`; `kasa task list` shows every task and what it last did. Note that `[budget]`'s ceiling pauses utility calls, not a scheduled answer — the cap and the floor are what actually bound this |
-| A task's prompt ages into nonsense | The prompt is stored as written and never rewritten, so it is auditable rather than mysterious; `kasa task list` prints it; `fire_once` for anything that has an end. Genuinely weak — nothing here notices that an answer stopped being useful |
+| A standing task spends money every day with nobody watching | Per-owner cap and an interval floor (`[tasks]`); every firing is metered like any other turn and shows up in `siatt cost`; `siatt task list` shows every task and what it last did. Note that `[budget]`'s ceiling pauses utility calls, not a scheduled answer — the cap and the floor are what actually bound this |
+| A task's prompt ages into nonsense | The prompt is stored as written and never rewritten, so it is auditable rather than mysterious; `siatt task list` prints it; `fire_once` for anything that has an end. Genuinely weak — nothing here notices that an answer stopped being useful |
 
 ---
 
@@ -1152,7 +1152,7 @@ optimization of a thing that must already work.
 - **Embedding provider churn.** Changing embedding models invalidates the whole
   vector index. Version the index and rebuild in the background, or accept the
   downtime?
-- **Multi-workspace.** If Kasa ever serves two Slack workspaces, does each get its
+- **Multi-workspace.** If Siatt ever serves two Slack workspaces, does each get its
   own LTM repo, or one repo with workspace-level scopes?
 - **Conflict resolution with human edits.** A human edits `people/jane.md` by hand
   while `promote` has a plan in flight against it. Rebase and retry, or detect and
@@ -1173,10 +1173,10 @@ optimization of a thing that must already work.
 
 ```toml
 [ltm]
-repo        = "git@github.com:KeunwooPark/kasa-memory.git"
-clone_path  = "~/.kasa/ltm"
+repo        = "git@github.com:KeunwooPark/siatt-memory.git"
+clone_path  = "~/.siatt/ltm"
 branch      = "main"
-token_env   = "KASA_GITHUB_TOKEN"
+token_env   = "SIATT_GITHUB_TOKEN"
 supervised  = ["forget"]              # these jobs open PRs instead of pushing
 
 [fetch]                               # optional; on by default, `enabled = false` removes the tool
@@ -1210,7 +1210,7 @@ bot_token_env = "SLACK_BOT_TOKEN"     # xoxb-
 allowed_channels = ["C0123ABCD"]
 stream = true                         # rewrite one message; false posts once
 
-[slack.reactions]                     # emoji → verdict on Kasa's own answers
+[slack.reactions]                     # emoji → verdict on Siatt's own answers
 "+1" = "up"
 x    = "down"
 
@@ -1241,23 +1241,23 @@ daily_usd_ceiling = 10.0
 ## Appendix B — CLI surface
 
 ```
-kasa init                     interactive setup; bootstraps the LTM repo
-kasa run                      start the daemon
-kasa reindex [--full]         rebuild FTS + embeddings from the repo
-kasa why "<question>"         show the retrieval trace
-kasa memory search "<q>"      search LTM from the terminal
-kasa memory show <id>         print a memory file
-kasa job run <kind>           run a consolidation job on demand
-kasa job list                 what each job is doing, and when it last ran
-kasa job retry                requeue every dead-lettered job
-kasa inbox status             what is queued, and what stopped being retried
-kasa inbox retry              requeue every dead-lettered event
-kasa task list                every standing task, and when each fires next
-kasa task add "<prompt>" --cron "0 9 * * 1-5" [--tz Asia/Seoul] [--once]
+siatt init                     interactive setup; bootstraps the LTM repo
+siatt run                      start the daemon
+siatt reindex [--full]         rebuild FTS + embeddings from the repo
+siatt why "<question>"         show the retrieval trace
+siatt memory search "<q>"      search LTM from the terminal
+siatt memory show <id>         print a memory file
+siatt job run <kind>           run a consolidation job on demand
+siatt job list                 what each job is doing, and when it last ran
+siatt job retry                requeue every dead-lettered job
+siatt inbox status             what is queued, and what stopped being retried
+siatt inbox retry              requeue every dead-lettered event
+siatt task list                every standing task, and when each fires next
+siatt task add "<prompt>" --cron "0 9 * * 1-5" [--tz Asia/Seoul] [--once]
                               [--session <id>] [--owner <id>]   operator-only; §7.1
-kasa task rm <id>             delete it
-kasa task pause <id>          stop it firing, without forgetting it
-kasa task resume <id>         start it again, and clear the failures that stopped it
-kasa task run <id>            fire one occurrence now, without waiting for the clock
-kasa doctor                   check config, tokens, repo privacy, lease state
+siatt task rm <id>             delete it
+siatt task pause <id>          stop it firing, without forgetting it
+siatt task resume <id>         start it again, and clear the failures that stopped it
+siatt task run <id>            fire one occurrence now, without waiting for the clock
+siatt doctor                   check config, tokens, repo privacy, lease state
 ```

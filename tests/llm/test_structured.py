@@ -7,13 +7,13 @@ from collections.abc import AsyncIterator
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from kasa.llm.registry import ModelRole, ProviderRegistry
-from kasa.llm.structured import (
+from siatt.llm.registry import ModelRole, ProviderRegistry
+from siatt.llm.structured import (
     StructuredOutputError,
     complete_json,
     parse_json_object,
 )
-from kasa.llm.types import ChatRequest, ChatResponse, Delta, Message, Usage
+from siatt.llm.types import ChatRequest, ChatResponse, Delta, Message, Usage
 
 
 class Shape(BaseModel):

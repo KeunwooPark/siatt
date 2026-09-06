@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from kasa.errors import ConfigError
-from kasa.vault import Vault, check_placement, clear_cache, fingerprint, resolve
+from siatt.errors import ConfigError
+from siatt.vault import Vault, check_placement, clear_cache, fingerprint, resolve
 
 
 @pytest.fixture(autouse=True)
@@ -17,7 +17,7 @@ def no_cached_vault() -> None:
 
 
 def test_save_uses_private_file_and_directory_modes(tmp_path: Path) -> None:
-    directory = tmp_path / "share" / "kasa"
+    directory = tmp_path / "share" / "siatt"
     directory.mkdir(parents=True, mode=0o755)
     vault = Vault(directory / "vault.json")
     vault.set("API_KEY", "secret-value-long-enough")
@@ -49,7 +49,7 @@ def test_environment_wins_over_vault(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     vault = Vault(path)
     vault.set("API_KEY", "stored-secret-value")
     vault.save()
-    monkeypatch.setenv("KASA_VAULT", str(path))
+    monkeypatch.setenv("SIATT_VAULT", str(path))
     monkeypatch.setenv("API_KEY", "exported-secret-value")
 
     assert resolve("API_KEY") == "exported-secret-value"

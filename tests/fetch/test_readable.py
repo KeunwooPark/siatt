@@ -8,7 +8,7 @@ text is no answer at all.
 
 from __future__ import annotations
 
-from kasa.fetch.readable import CUT, clamp, readable
+from siatt.fetch.readable import CUT, clamp, readable
 
 
 def text_of(html: str, limit: int = 10_000) -> str:

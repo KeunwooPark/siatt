@@ -10,19 +10,19 @@ from typing import Any
 
 import pytest
 
-from kasa.config import PromoteSettings
-from kasa.llm.registry import ModelRole, ProviderRegistry
-from kasa.llm.tokens import HeuristicTokenizer
-from kasa.llm.types import ChatRequest, ChatResponse, Delta, Message, Usage
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.document import MemoryDoc
-from kasa.memory.gitcmd import GitRepo
-from kasa.memory.index import MemoryIndex
-from kasa.memory.ltm import MemoryStore
-from kasa.memory.manifest import Manifest
-from kasa.memory.retrieve import Retriever
-from kasa.runner.promote import Promoter
-from kasa.store import Store
+from siatt.config import PromoteSettings
+from siatt.llm.registry import ModelRole, ProviderRegistry
+from siatt.llm.tokens import HeuristicTokenizer
+from siatt.llm.types import ChatRequest, ChatResponse, Delta, Message, Usage
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.document import MemoryDoc
+from siatt.memory.gitcmd import GitRepo
+from siatt.memory.index import MemoryIndex
+from siatt.memory.ltm import MemoryStore
+from siatt.memory.manifest import Manifest
+from siatt.memory.retrieve import Retriever
+from siatt.runner.promote import Promoter
+from siatt.store import Store
 
 
 class Scripted:
@@ -172,8 +172,8 @@ async def test_the_commit_is_machine_readable(clone: Path, store: Store) -> None
     await (await promoter_for(clone, store, provider)).run()
 
     message = GitRepo.at(clone).run("log", "-1", "--format=%B")
-    assert "Kasa-Job: promote" in message
-    assert "Kasa-Memory-Ids: mem_" in message
+    assert "Siatt-Job: promote" in message
+    assert "Siatt-Memory-Ids: mem_" in message
 
 
 async def test_observations_about_one_subject_are_reconciled_together(
@@ -280,7 +280,7 @@ async def test_a_created_memory_inherits_the_group_scope(
     # came from. This is the leak the whole scope discipline exists to stop.
     provider = Scripted(creating("Priya Raman", "Job hunting."))
 
-    with caplog.at_level("WARNING", logger="kasa.runner.promote"):
+    with caplog.at_level("WARNING", logger="siatt.runner.promote"):
         await (await promoter_for(clone, store, provider)).run()
 
     written = MemoryDoc.parse((clone / "memory/facts/priya-raman.md").read_text())
@@ -327,7 +327,7 @@ async def test_an_update_may_not_change_visibility(clone: Path, store: Store, ca
         )
     )
 
-    with caplog.at_level("WARNING", logger="kasa.runner.promote"):
+    with caplog.at_level("WARNING", logger="siatt.runner.promote"):
         await (await promoter_for(clone, store, provider)).run()
 
     written = MemoryDoc.parse((clone / path).read_text())
@@ -380,7 +380,7 @@ async def test_the_planner_is_given_no_tools(clone: Path, store: Store) -> None:
     await (await promoter_for(clone, store, provider)).run()
 
     assert provider.requests[0].tools == ()
-    assert "KASA_UNTRUSTED_" in provider.prompts[0]
+    assert "SIATT_UNTRUSTED_" in provider.prompts[0]
 
 
 async def test_two_subjects_that_want_one_path_do_not_silently_overwrite(

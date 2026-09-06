@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 import pytest
 
-from kasa.config import (
+from siatt.config import (
     BrowserSettings,
     Config,
     FetchSettings,
@@ -14,7 +14,7 @@ from kasa.config import (
     SlackSettings,
     write_config,
 )
-from kasa.doctor import (
+from siatt.doctor import (
     Check,
     Report,
     Status,
@@ -25,24 +25,24 @@ from kasa.doctor import (
     diagnose,
     verify_repo_visibility,
 )
-from kasa.errors import ConfigError
-from kasa.github import GitHubClient
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.document import MemoryDoc
-from kasa.memory.gitcmd import GitRepo, run_git
-from kasa.memory.index import MemoryIndex
-from kasa.memory.manifest import Manifest
-from kasa.store import Store
-from kasa.vault import VAULT_ENV, Vault, clear_cache
+from siatt.errors import ConfigError
+from siatt.github import GitHubClient
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.document import MemoryDoc
+from siatt.memory.gitcmd import GitRepo, run_git
+from siatt.memory.index import MemoryIndex
+from siatt.memory.manifest import Manifest
+from siatt.store import Store
+from siatt.vault import VAULT_ENV, Vault, clear_cache
 from tests.conftest import mock_client
 
 REPO = {
-    "full_name": "someone/kasa-memory",
+    "full_name": "someone/siatt-memory",
     "private": True,
     "default_branch": "main",
-    "clone_url": "https://github.com/someone/kasa-memory.git",
-    "ssh_url": "git@github.com:someone/kasa-memory.git",
-    "html_url": "https://github.com/someone/kasa-memory",
+    "clone_url": "https://github.com/someone/siatt-memory.git",
+    "ssh_url": "git@github.com:someone/siatt-memory.git",
+    "html_url": "https://github.com/someone/siatt-memory",
     "permissions": {"push": True},
     "size": 12,
 }
@@ -68,9 +68,9 @@ def unreachable_github() -> GitHubClient:
 def config_for(tmp_path: Path, **ltm: Any) -> Config:
     return Config.model_validate(
         {
-            "ltm": {"repo": "someone/kasa-memory", "clone_path": str(tmp_path / "ltm"), **ltm},
+            "ltm": {"repo": "someone/siatt-memory", "clone_path": str(tmp_path / "ltm"), **ltm},
             "llm": {"chat": {"kind": "anthropic", "model": "m", "key_env": "TEST_KEY"}},
-            "store": {"path": str(tmp_path / "kasa.db")},
+            "store": {"path": str(tmp_path / "siatt.db")},
         }
     )
 
@@ -86,7 +86,7 @@ def detail_of(report: Report, name: str) -> str:
 @pytest.fixture(autouse=True)
 def key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TEST_KEY", "sk-test")
-    monkeypatch.setenv("KASA_GITHUB_TOKEN", "ghp_token")
+    monkeypatch.setenv("SIATT_GITHUB_TOKEN", "ghp_token")
 
 
 @pytest.fixture
@@ -148,7 +148,7 @@ async def test_an_unconfigured_repo_warns_and_skips_the_rest(tmp_path: Path) -> 
     cfg = Config.model_validate(
         {
             "llm": {"chat": {"kind": "anthropic", "model": "m", "key_env": "TEST_KEY"}},
-            "store": {"path": str(tmp_path / "kasa.db")},
+            "store": {"path": str(tmp_path / "siatt.db")},
         }
     )
     report = await diagnose(cfg)
@@ -183,7 +183,7 @@ async def test_an_unreachable_github_warns_rather_than_failing(tmp_path: Path, c
 async def test_a_missing_token_is_reported_as_unverifiable(
     tmp_path: Path, clone: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("KASA_GITHUB_TOKEN")
+    monkeypatch.delenv("SIATT_GITHUB_TOKEN")
     report = await diagnose(config_for(tmp_path))
 
     assert status_of(report, "github token") is Status.WARN
@@ -239,7 +239,7 @@ async def test_startup_does_not_block_on_an_unreachable_github(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Refusing to start whenever the network is down would make the check the outage."""
-    with caplog.at_level("WARNING", logger="kasa.doctor"):
+    with caplog.at_level("WARNING", logger="siatt.doctor"):
         await verify_repo_visibility(config_for(tmp_path), github=unreachable_github())
 
     assert "could not verify" in caplog.text, "silently skipping it would be worse"
@@ -302,13 +302,13 @@ async def test_a_stale_index_says_to_reindex(tmp_path: Path, clone: Path) -> Non
     report = await diagnose(config_for(tmp_path), github=github())
 
     assert status_of(report, "index freshness") is Status.WARN
-    assert "run `kasa reindex`" in detail_of(report, "index freshness")
+    assert "run `siatt reindex`" in detail_of(report, "index freshness")
 
 
 async def test_an_unreadable_file_is_not_reported_as_staleness(tmp_path: Path, clone: Path) -> None:
-    """#69. `kasa reindex` had already run three times and could not clear it,
+    """#69. `siatt reindex` had already run three times and could not clear it,
     because a file the parser refuses never reaches `index_state`."""
-    async with await Store.open(tmp_path / "kasa.db") as store:
+    async with await Store.open(tmp_path / "siatt.db") as store:
         await MemoryIndex(store, clone).reindex()
     (clone / "memory" / "facts" / "broken.md").write_text("no frontmatter here at all")
 
@@ -317,13 +317,13 @@ async def test_an_unreadable_file_is_not_reported_as_staleness(tmp_path: Path, c
 
     assert status_of(report, "index freshness") is Status.WARN
     assert "the repo has moved on" not in detail
-    assert "run `kasa reindex`" not in detail, "it has, and it cannot fix this"
+    assert "run `siatt reindex`" not in detail, "it has, and it cannot fix this"
     assert "memory/facts/broken.md" in detail
     assert "cannot be indexed" in detail
 
 
 async def test_a_clean_index_says_what_it_holds(tmp_path: Path, clone: Path) -> None:
-    async with await Store.open(tmp_path / "kasa.db") as store:
+    async with await Store.open(tmp_path / "siatt.db") as store:
         await MemoryIndex(store, clone).reindex()
 
     report = await diagnose(config_for(tmp_path), github=github())
@@ -339,7 +339,7 @@ async def test_a_parked_edit_is_reported_where_somebody_would_look(
     recover."""
     (clone / "memory" / "facts").mkdir(parents=True, exist_ok=True)
     (clone / "memory" / "facts" / "by-hand.md").write_text("mid-edit\n")
-    GitRepo.at(clone).stash("kasa: uncommitted changes parked before a memory write (t)")
+    GitRepo.at(clone).stash("siatt: uncommitted changes parked before a memory write (t)")
 
     report = await diagnose(config_for(tmp_path), github=github())
     detail = detail_of(report, "clone")
@@ -409,7 +409,7 @@ def slack_config(**settings: object) -> Config:
 
 async def test_slack_is_skipped_when_it_is_not_configured() -> None:
     assert _slack(slack_config()) == [
-        Check("slack", Status.SKIP, "not configured; `kasa run` serves the terminal")
+        Check("slack", Status.SKIP, "not configured; `siatt run` serves the terminal")
     ]
 
 
@@ -418,24 +418,24 @@ async def test_a_missing_slack_token_fails_before_the_daemon_needs_it(
 ) -> None:
     """A Socket Mode daemon with one of the two tokens missing fails on
     connect, in a library, minutes into a deploy."""
-    monkeypatch.setenv("KASA_SLACK_BOT", "xoxb-1")
-    monkeypatch.delenv("KASA_SLACK_APP", raising=False)
-    cfg = slack_config(bot_token_env="KASA_SLACK_BOT", app_token_env="KASA_SLACK_APP")
+    monkeypatch.setenv("SIATT_SLACK_BOT", "xoxb-1")
+    monkeypatch.delenv("SIATT_SLACK_APP", raising=False)
+    cfg = slack_config(bot_token_env="SIATT_SLACK_BOT", app_token_env="SIATT_SLACK_APP")
 
     check = _slack(cfg)[0]
 
     assert check.status is Status.FAIL
-    assert check.detail == "KASA_SLACK_APP not set"
+    assert check.detail == "SIATT_SLACK_APP not set"
 
 
 async def test_a_configured_slack_says_where_it_will_listen(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("KASA_SLACK_BOT", "xoxb-1")
-    monkeypatch.setenv("KASA_SLACK_APP", "xapp-1")
+    monkeypatch.setenv("SIATT_SLACK_BOT", "xoxb-1")
+    monkeypatch.setenv("SIATT_SLACK_APP", "xapp-1")
     cfg = slack_config(
-        bot_token_env="KASA_SLACK_BOT",
-        app_token_env="KASA_SLACK_APP",
+        bot_token_env="SIATT_SLACK_BOT",
+        app_token_env="SIATT_SLACK_APP",
         allowed_channels=["C0DEPLOY", "C0GENERAL"],
     )
 
@@ -553,25 +553,25 @@ async def test_search_is_skipped_when_it_is_not_configured() -> None:
 async def test_a_missing_search_key_fails_rather_than_waiting_for_a_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("KASA_BRAVE", raising=False)
-    cfg = Config(search=SearchSettings(kind="brave", key_env="KASA_BRAVE"))
+    monkeypatch.delenv("SIATT_BRAVE", raising=False)
+    cfg = Config(search=SearchSettings(kind="brave", key_env="SIATT_BRAVE"))
 
     check = _search(cfg)
 
     assert check.status is Status.FAIL
-    assert check.detail == "brave — KASA_BRAVE is not set"
+    assert check.detail == "brave — SIATT_BRAVE is not set"
 
 
 async def test_a_configured_search_says_where_its_key_came_from(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("KASA_BRAVE", "bsa-1")
-    cfg = Config(search=SearchSettings(kind="brave", key_env="KASA_BRAVE"))
+    monkeypatch.setenv("SIATT_BRAVE", "bsa-1")
+    cfg = Config(search=SearchSettings(kind="brave", key_env="SIATT_BRAVE"))
 
     check = _search(cfg)
 
     assert check.status is Status.OK
-    assert check.detail == "brave via KASA_BRAVE"
+    assert check.detail == "brave via SIATT_BRAVE"
 
 
 # -- web fetch ---------------------------------------------------------------

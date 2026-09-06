@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from kasa.core.supervise import keep_running
+from siatt.core.supervise import keep_running
 from tests.conftest import until
 
 

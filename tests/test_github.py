@@ -5,17 +5,17 @@ import json
 import httpx
 import pytest
 
-from kasa.errors import GitHubError
-from kasa.github import GitHubClient
+from siatt.errors import GitHubError
+from siatt.github import GitHubClient
 from tests.conftest import mock_client
 
 REPO = {
-    "full_name": "someone/kasa-memory",
+    "full_name": "someone/siatt-memory",
     "private": True,
     "default_branch": "main",
-    "clone_url": "https://github.com/someone/kasa-memory.git",
-    "ssh_url": "git@github.com:someone/kasa-memory.git",
-    "html_url": "https://github.com/someone/kasa-memory",
+    "clone_url": "https://github.com/someone/siatt-memory.git",
+    "ssh_url": "git@github.com:someone/siatt-memory.git",
+    "html_url": "https://github.com/someone/siatt-memory",
     "permissions": {"push": True, "admin": False},
     "size": 0,
 }
@@ -27,7 +27,7 @@ def client(handler) -> GitHubClient:  # type: ignore[no-untyped-def]
 
 async def test_get_repo_parses_what_matters() -> None:
     async with client(lambda r: httpx.Response(200, json=REPO)) as gh:
-        info = await gh.get_repo("someone/kasa-memory")
+        info = await gh.get_repo("someone/siatt-memory")
 
     assert info is not None
     assert info.private and info.can_push and info.empty
@@ -42,14 +42,14 @@ async def test_a_missing_repo_is_none_not_an_error() -> None:
 async def test_read_only_access_is_visible() -> None:
     payload = {**REPO, "permissions": {"push": False, "admin": False}}
     async with client(lambda r: httpx.Response(200, json=payload)) as gh:
-        info = await gh.get_repo("someone/kasa-memory")
+        info = await gh.get_repo("someone/siatt-memory")
     assert info is not None and not info.can_push
 
 
 async def test_absent_permissions_are_not_assumed_to_be_write() -> None:
     payload = {k: v for k, v in REPO.items() if k != "permissions"}
     async with client(lambda r: httpx.Response(200, json=payload)) as gh:
-        info = await gh.get_repo("someone/kasa-memory")
+        info = await gh.get_repo("someone/siatt-memory")
     assert info is not None and not info.can_push
 
 
@@ -63,7 +63,7 @@ async def test_a_repo_under_your_own_login_is_a_user_repo() -> None:
         return httpx.Response(201, json=REPO)
 
     async with client(handler) as gh:
-        await gh.create_repo("someone/kasa-memory")
+        await gh.create_repo("someone/siatt-memory")
     assert "/user/repos" in seen
 
 
@@ -74,10 +74,10 @@ async def test_a_repo_under_another_namespace_is_an_org_repo() -> None:
         seen.append(request.url.path)
         if request.url.path == "/user":
             return httpx.Response(200, json={"login": "someone"})
-        return httpx.Response(201, json={**REPO, "full_name": "acme/kasa-memory"})
+        return httpx.Response(201, json={**REPO, "full_name": "acme/siatt-memory"})
 
     async with client(handler) as gh:
-        await gh.create_repo("acme/kasa-memory")
+        await gh.create_repo("acme/siatt-memory")
     assert "/orgs/acme/repos" in seen
 
 
@@ -91,16 +91,16 @@ async def test_create_pull_request_sends_the_review_branch_and_body() -> None:
 
     async with client(handler) as gh:
         pr = await gh.create_pull_request(
-            "someone/kasa-memory",
-            head="kasa/forget-2026-09-04",
+            "someone/siatt-memory",
+            head="siatt/forget-2026-09-04",
             base="main",
             title="memory: forget stale facts",
             body="Delete old facts because their grace period elapsed.",
         )
 
-    assert seen["path"] == "/repos/someone/kasa-memory/pulls"
+    assert seen["path"] == "/repos/someone/siatt-memory/pulls"
     assert json.loads(str(seen["body"])) == {
-        "head": "kasa/forget-2026-09-04",
+        "head": "siatt/forget-2026-09-04",
         "base": "main",
         "title": "memory: forget stale facts",
         "body": "Delete old facts because their grace period elapsed.",
@@ -124,7 +124,7 @@ async def test_errors_explain_what_to_do(status: int, expected: str) -> None:
             await gh.login()
 
 
-async def test_a_network_failure_is_a_kasa_error_not_an_httpx_one() -> None:
+async def test_a_network_failure_is_a_siatt_error_not_an_httpx_one() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("no route to host")
 

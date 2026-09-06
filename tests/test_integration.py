@@ -1,4 +1,4 @@
-"""The whole v0 stack, wired the way `kasa run` wires it.
+"""The whole v0 stack, wired the way `siatt run` wires it.
 
 Everything below the CLI is real: a real provider adapter parsing real wire
 format off a mock transport, the real registry, packer, tool dispatch and store.
@@ -11,14 +11,14 @@ import json
 
 import httpx
 
-from kasa.core.agent import Agent, AgentConfig
-from kasa.core.context import ContextPacker
-from kasa.core.tools import ToolRegistry, builtin_tools
-from kasa.llm.anthropic_compat import AnthropicCompatProvider
-from kasa.llm.cost import CostMeter, Price, PriceBook
-from kasa.llm.registry import ModelRole, ProviderRegistry
-from kasa.llm.tokens import Tokenizer
-from kasa.store import Store
+from siatt.core.agent import Agent, AgentConfig
+from siatt.core.context import ContextPacker
+from siatt.core.tools import ToolRegistry, builtin_tools
+from siatt.llm.anthropic_compat import AnthropicCompatProvider
+from siatt.llm.cost import CostMeter, Price, PriceBook
+from siatt.llm.registry import ModelRole, ProviderRegistry
+from siatt.llm.tokens import Tokenizer
+from siatt.store import Store
 from tests.conftest import mock_client, sse
 
 ASKS_FOR_TOOL = [

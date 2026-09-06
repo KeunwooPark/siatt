@@ -2,7 +2,7 @@
 
 This is the acceptance criterion for the two adapters (#4, #5): whatever the
 wire format, the canonical types coming out the other side must be identical.
-Anything asserted here is a promise the rest of Kasa relies on.
+Anything asserted here is a promise the rest of Siatt relies on.
 """
 
 from __future__ import annotations
@@ -13,17 +13,17 @@ from typing import Any
 import httpx
 import pytest
 
-from kasa.errors import (
+from siatt.errors import (
     AuthError,
     ContextOverflowError,
     ProviderProtocolError,
     RateLimitError,
     TransientError,
 )
-from kasa.llm.anthropic_compat import AnthropicCompatProvider
-from kasa.llm.base import LLMProvider, collect
-from kasa.llm.openai_compat import OpenAICompatProvider
-from kasa.llm.types import (
+from siatt.llm.anthropic_compat import AnthropicCompatProvider
+from siatt.llm.base import LLMProvider, collect
+from siatt.llm.openai_compat import OpenAICompatProvider
+from siatt.llm.types import (
     ChatRequest,
     Message,
     TextBlock,
@@ -267,7 +267,7 @@ def case(request: pytest.FixtureRequest) -> Case:
 
 
 CONVERSATION = ChatRequest(
-    system="You are Kasa.",
+    system="You are Siatt.",
     messages=(Message.user("weather in Seoul?"),),
     tools=(WEATHER,),
     max_tokens=512,
@@ -324,11 +324,11 @@ async def test_system_prompt_placement(case: Case) -> None:
 
     if case.name == "anthropic":
         # Top-level parameter, in block form so it can carry the cache marker.
-        assert sent["system"][0]["text"] == "You are Kasa."
+        assert sent["system"][0]["text"] == "You are Siatt."
         assert sent["system"][0]["cache_control"] == {"type": "ephemeral"}
         assert all(m["role"] != "system" for m in sent["messages"])
     else:
-        assert sent["messages"][0] == {"role": "system", "content": "You are Kasa."}
+        assert sent["messages"][0] == {"role": "system", "content": "You are Siatt."}
 
 
 async def test_per_turn_context_stays_out_of_the_cached_prefix(case: Case) -> None:
@@ -345,7 +345,7 @@ async def test_per_turn_context_stays_out_of_the_cached_prefix(case: Case) -> No
         assert blocks[1]["text"] == "recalled: it is cold"
     else:
         content = sent["messages"][0]["content"]
-        assert content.startswith("You are Kasa.")
+        assert content.startswith("You are Siatt.")
         assert "recalled: it is cold" in content
 
 
@@ -367,7 +367,7 @@ async def test_tool_results_round_trip(case: Case) -> None:
     """A full tool exchange must serialize into whatever shape each API wants."""
     provider = case.build(httpx.Response(200, json=case.text_body))
     conversation = ChatRequest(
-        system="You are Kasa.",
+        system="You are Siatt.",
         messages=(
             Message.user("weather in Seoul?"),
             Message(

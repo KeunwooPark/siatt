@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from kasa.memory.dedupe import clusters, overlap, tokens
-from kasa.memory.document import MemoryDoc
+from siatt.memory.dedupe import clusters, overlap, tokens
+from siatt.memory.document import MemoryDoc
 
 SAME_A = "Priya Raman owns the deploy pipeline and runs the release checklist every Thursday."
 SAME_B = "The deploy pipeline is owned by Priya Raman; she runs the release checklist weekly."

@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from kasa.adapters.slack.notify import SlackPostError, post_message
+from siatt.adapters.slack.notify import SlackPostError, post_message
 from tests.conftest import mock_client
 
 

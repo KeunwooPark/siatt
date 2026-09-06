@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 
-from kasa.errors import Blocked, FetchError
-from kasa.fetch.browser import HARDENING, SKIPPED_TYPES, BrowserRenderer
+from siatt.errors import Blocked, FetchError
+from siatt.fetch.browser import HARDENING, SKIPPED_TYPES, BrowserRenderer
 
 PUBLIC = "93.184.216.34"
 PAGE = "<html><head><title>Deploys</title></head><body><p>Tuesday.</p></body></html>"

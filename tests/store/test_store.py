@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from kasa.core.events import InboundEvent
-from kasa.core.inbox import Inbox
-from kasa.errors import StoreError
-from kasa.llm.cost import CallRecord
-from kasa.llm.types import Message, TextBlock, ToolResultBlock, ToolUseBlock, Usage, starts_turn
-from kasa.memory.observation import ObservationDraft
-from kasa.redact import Redactor
-from kasa.store import Store
+from siatt.core.events import InboundEvent
+from siatt.core.inbox import Inbox
+from siatt.errors import StoreError
+from siatt.llm.cost import CallRecord
+from siatt.llm.types import Message, TextBlock, ToolResultBlock, ToolUseBlock, Usage, starts_turn
+from siatt.memory.observation import ObservationDraft
+from siatt.redact import Redactor
+from siatt.store import Store
 
 
 async def test_migrations_apply_from_empty_and_are_idempotent(tmp_path: Path) -> None:
@@ -291,9 +291,9 @@ async def test_a_file_that_is_not_a_database_is_refused_not_leaked(tmp_path: Pat
     """#87. `aiosqlite.connect` succeeds — opening is lazy — and starts a worker
     thread that is not a daemon. The first statement then fails, and leaking the
     connection there left the process alive at interpreter shutdown after the
-    error had already been printed. Every command hung, `kasa doctor` included.
+    error had already been printed. Every command hung, `siatt doctor` included.
     """
-    path = tmp_path / "kasa.db"
+    path = tmp_path / "siatt.db"
     path.write_bytes(b"this is not sqlite at all, not even close")
     before = sqlite_threads()
 
@@ -302,14 +302,14 @@ async def test_a_file_that_is_not_a_database_is_refused_not_leaked(tmp_path: Pat
 
     assert "file is not a database" in str(caught.value)
     assert str(path) in str(caught.value), "it names the file"
-    assert "kasa reindex" in str(caught.value), "and says how to recover"
+    assert "siatt reindex" in str(caught.value), "and says how to recover"
     # The whole bug, in one assertion.
     assert sqlite_threads() == before, "the connection thread outlived the failure"
 
 
 async def test_a_truncated_database_is_refused_not_leaked(tmp_path: Path) -> None:
     """The realistic shape of this: a full disk, or a kill mid-write."""
-    path = tmp_path / "kasa.db"
+    path = tmp_path / "siatt.db"
     async with await Store.open(path):
         pass
     whole = path.read_bytes()
@@ -327,17 +327,17 @@ async def test_a_directory_where_the_database_should_be_is_refused(tmp_path: Pat
     """The connect fails rather than a statement after it, so the thread was
     never the problem here — but the error read as a traceback instead of as
     the same sentence."""
-    (tmp_path / "kasa.db").mkdir()
+    (tmp_path / "siatt.db").mkdir()
 
     with pytest.raises(StoreError) as caught:
-        await Store.open(tmp_path / "kasa.db")
+        await Store.open(tmp_path / "siatt.db")
 
     assert "unable to open database file" in str(caught.value)
 
 
 async def test_opening_a_good_database_still_works(tmp_path: Path) -> None:
     before = sqlite_threads()
-    async with await Store.open(tmp_path / "kasa.db") as store:
+    async with await Store.open(tmp_path / "siatt.db") as store:
         assert await store.raw("SELECT name FROM schema_version")
         assert sqlite_threads() == before + 1, "the fixture holds one open too"
     assert sqlite_threads() == before

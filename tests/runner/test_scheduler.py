@@ -13,17 +13,17 @@ from typing import Any
 
 import pytest
 
-from kasa.core.backoff import Backoff
-from kasa.errors import StoreError
-from kasa.runner.cron import HOURLY, NIGHTLY, Cron
-from kasa.runner.scheduler import (
+from siatt.core.backoff import Backoff
+from siatt.errors import StoreError
+from siatt.runner.cron import HOURLY, NIGHTLY, Cron
+from siatt.runner.scheduler import (
     Job,
     JobSpec,
     Scheduler,
     UnknownJob,
     scheduled_id,
 )
-from kasa.store import Store
+from siatt.store import Store
 from tests.conftest import until
 
 NOW = datetime(2026, 9, 3, 10, 30, tzinfo=UTC)
@@ -259,7 +259,7 @@ async def test_a_one_shot_runs_even_with_older_rows_of_its_kind_ahead_of_it(
 ) -> None:
     """`lease` is ordered by `run_after` and bounded by concurrency, so a row
     queued just now is last in line. Reporting on a row nobody ran is how
-    `kasa job run` came to print `reindex pending: None` and exit 1."""
+    `siatt job run` came to print `reindex pending: None` and exit 1."""
     for n in range(5):
         await store.enqueue_job(
             job_id=f"older-{n}",
@@ -491,8 +491,8 @@ async def test_the_running_scheduler_fills_the_table_on_its_own(store: Store) ->
 CRASH_MID_JOB = """
 import asyncio, os, signal, sys
 
-from kasa.runner.scheduler import JobQueue
-from kasa.store import Store
+from siatt.runner.scheduler import JobQueue
+from siatt.store import Store
 
 
 async def main() -> None:
@@ -515,7 +515,7 @@ async def test_killing_the_daemon_mid_job_leaves_exactly_one_completed_run(
     tmp_path: Path,
 ) -> None:
     """The acceptance criterion of #26, run for real."""
-    db = tmp_path / "kasa.db"
+    db = tmp_path / "siatt.db"
     async with await Store.open(db) as setup:
         await Scheduler(setup, [JobSpec(kind="reindex", handler=records([]))]).trigger("reindex")
 

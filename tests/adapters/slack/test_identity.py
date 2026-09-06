@@ -13,9 +13,9 @@ from typing import Any
 
 import pytest
 
-from kasa.adapters.slack.identity import Directory, SlackUser, read_user, user_ref
-from kasa.core.events import InboundEvent
-from kasa.store import Store
+from siatt.adapters.slack.identity import Directory, SlackUser, read_user, user_ref
+from siatt.core.events import InboundEvent
+from siatt.store import Store
 
 TEAM = "T0TEAM"
 JANE = "U0JANE"

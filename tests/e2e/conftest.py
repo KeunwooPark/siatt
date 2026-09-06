@@ -135,7 +135,7 @@ class FakeOpenAIServer(ThreadingHTTPServer):
 
 
 @dataclass(frozen=True)
-class KasaRig:
+class SiattRig:
     config: Path
     database: Path
     env: dict[str, str]
@@ -149,7 +149,7 @@ class KasaRig:
         config: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, "-m", "kasa.cli", *args, "--config", str(config or self.config)],
+            [sys.executable, "-m", "siatt.cli", *args, "--config", str(config or self.config)],
             input=input,
             text=True,
             capture_output=True,
@@ -166,7 +166,7 @@ class KasaRig:
 
 
 @pytest.fixture
-def kasa_rig(tmp_path: Path) -> Iterator[KasaRig]:
+def siatt_rig(tmp_path: Path) -> Iterator[SiattRig]:
     server = FakeOpenAIServer(("127.0.0.1", 0), FakeOpenAIHandler)
     server.requests = []
     server.request_started = threading.Event()
@@ -175,21 +175,21 @@ def kasa_rig(tmp_path: Path) -> Iterator[KasaRig]:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-    database = tmp_path / "kasa.db"
+    database = tmp_path / "siatt.db"
     config = tmp_path / "config.toml"
     host, port = server.server_address
     config.write_text(
         f'[store]\npath = "{database}"\n\n'
         '[llm.chat]\nkind = "openai"\nmodel = "e2e-model"\n'
-        f'base_url = "http://{host}:{port}/v1"\nkey_env = "KASA_E2E_API_KEY"\n'
+        f'base_url = "http://{host}:{port}/v1"\nkey_env = "SIATT_E2E_API_KEY"\n'
         "timeout_seconds = 0.05\n\n"
         "[retry]\nattempts = 3\nbase_delay = 0\nmax_delay = 0\njitter = 0\n"
     )
     env = os.environ.copy()
-    env["KASA_E2E_API_KEY"] = "not-a-real-secret"
+    env["SIATT_E2E_API_KEY"] = "not-a-real-secret"
 
     try:
-        yield KasaRig(config=config, database=database, env=env, server=server)
+        yield SiattRig(config=config, database=database, env=env, server=server)
     finally:
         server.shutdown()
         server.server_close()

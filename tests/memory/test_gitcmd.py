@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from kasa.errors import GitError
-from kasa.memory.gitcmd import GitRepo, run_git, token_auth
+from siatt.errors import GitError
+from siatt.memory.gitcmd import GitRepo, run_git, token_auth
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def test_commit_returns_none_when_nothing_changed(repo: GitRepo) -> None:
 
 
 def test_commit_stages_only_the_paths_it_was_given(repo: GitRepo) -> None:
-    (repo.path / "mine.txt").write_text("kasa wrote this")
+    (repo.path / "mine.txt").write_text("siatt wrote this")
     (repo.path / "yours.txt").write_text("a person is mid-edit here")
     repo.commit("memory: only mine", paths=["mine.txt"])
 
@@ -49,11 +49,11 @@ def no_git_identity(repo: GitRepo, monkeypatch: pytest.MonkeyPatch) -> None:
 def test_commit_does_not_need_a_configured_git_identity(
     repo: GitRepo, no_git_identity: None
 ) -> None:
-    """Kasa borrows the user's machine; it must not depend on their git config."""
+    """Siatt borrows the user's machine; it must not depend on their git config."""
     (repo.path / "a.txt").write_text("a")
 
     assert repo.commit("add a")
-    assert "Kasa" in repo.run("log", "-1", "--format=%an")
+    assert "Siatt" in repo.run("log", "-1", "--format=%an")
 
 
 def test_rebase_does_not_need_a_configured_git_identity(
@@ -63,7 +63,7 @@ def test_rebase_does_not_need_a_configured_git_identity(
 
     Without an identity `git rebase` aborts with "empty ident name", which meant
     every push that lost a race failed on any machine without a global
-    `user.name` — including every container Kasa is likely to run in.
+    `user.name` — including every container Siatt is likely to run in.
     """
     bare = tmp_path / "remote.git"
     run_git("init", "--bare", "--initial-branch", "main", str(bare))
@@ -96,7 +96,7 @@ def test_stash_does_not_need_a_configured_git_identity(
     repo.commit("a")
     (repo.path / "b.txt").write_text("left behind by a crashed run")
 
-    assert repo.stash("kasa: recovered") is True
+    assert repo.stash("siatt: recovered") is True
     assert not repo.is_dirty()
 
 
@@ -147,7 +147,7 @@ def test_clone_of_an_empty_repo_lands_on_the_right_branch(tmp_path: Path) -> Non
 
 def test_token_auth_keeps_the_token_out_of_argv_and_config() -> None:
     with token_auth("ghp_secret") as env:
-        assert env["KASA_GIT_TOKEN"] == "ghp_secret"
+        assert env["SIATT_GIT_TOKEN"] == "ghp_secret"
         script = Path(env["GIT_ASKPASS"])
         assert script.exists()
         assert "ghp_secret" not in script.read_text(), "the script reads the env, it does not embed"

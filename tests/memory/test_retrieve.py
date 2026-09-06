@@ -14,13 +14,13 @@ from pathlib import Path
 
 import pytest
 
-from kasa.core.context import PINNED_HEADER, ContextPacker
-from kasa.llm.tokens import HeuristicTokenizer, Tokenizer
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.document import MemoryDoc
-from kasa.memory.explain import render_trace
-from kasa.memory.index import MemoryIndex
-from kasa.memory.retrieve import (
+from siatt.core.context import PINNED_HEADER, ContextPacker
+from siatt.llm.tokens import HeuristicTokenizer, Tokenizer
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.document import MemoryDoc
+from siatt.memory.explain import render_trace
+from siatt.memory.index import MemoryIndex
+from siatt.memory.retrieve import (
     DEFAULT_LIMIT,
     Candidate,
     Retriever,
@@ -29,8 +29,8 @@ from kasa.memory.retrieve import (
     permits,
     render_snippet,
 )
-from kasa.redact import Redactor
-from kasa.store import Store
+from siatt.redact import Redactor
+from siatt.store import Store
 
 NOW = datetime(2026, 9, 3, tzinfo=UTC)
 
@@ -101,8 +101,8 @@ CORPUS: list[dict[str, object]] = [
     },
     {
         "type": "fact",
-        "title": "Kasa runs on a single workspace",
-        "tags": ["kasa"],
+        "title": "Siatt runs on a single workspace",
+        "tags": ["siatt"],
         "body": "Multi-tenancy is explicitly out of scope for v1.",
     },
 ]
@@ -128,7 +128,7 @@ GOLDEN: list[tuple[str, str]] = [
     ("What is the wifi password situation?", "The office wifi password is on the whiteboard"),
     ("What format do we use for retrospectives?", "Incident retrospective format"),
     ("Are retrospectives blameless?", "Incident retrospective format"),
-    ("Does Kasa support multiple workspaces?", "Kasa runs on a single workspace"),
+    ("Does Siatt support multiple workspaces?", "Siatt runs on a single workspace"),
 ]
 
 
@@ -755,7 +755,7 @@ async def test_a_caller_can_ask_for_more_memories_than_a_prompt_holds(
 ) -> None:
     """#61. `DEFAULT_LIMIT` bounds what fits in a prompt, not what can be found."""
     search = retriever(store, tokenizer)
-    question = "deploy billing postgres review incident wifi kasa credentials retrospective"
+    question = "deploy billing postgres review incident wifi siatt credentials retrospective"
 
     default = await search.retrieve(question)
     assert len(default.kept) == DEFAULT_LIMIT
@@ -820,7 +820,7 @@ async def test_a_credential_in_memory_never_reaches_the_prompt(
 async def test_every_view_of_a_candidate_is_scrubbed_not_just_the_snippet(
     leaky: str, store: Store, tokenizer: Tokenizer
 ) -> None:
-    """`memory_search` renders from `kept`, and `kasa why` from the trace.
+    """`memory_search` renders from `kept`, and `siatt why` from the trace.
 
     Scrubbing only where snippets are built would leave both of those reading
     the raw text off the same candidate — which is the shape of the original
@@ -1059,7 +1059,7 @@ async def test_one_memory_packed_as_several_chunks_is_one_recall(
 async def test_a_retriever_that_is_not_a_conversation_records_nothing(
     corpus: dict[str, str], store: Store, tokenizer: Tokenizer
 ) -> None:
-    """`kasa why` traces what *would* be recalled and `promote` reads
+    """`siatt why` traces what *would* be recalled and `promote` reads
     competition for a plan. Counting either would let a debugging session
     decide what stays in long-term memory."""
     await retriever(store, tokenizer).retrieve("who owns the deploy pipeline?")

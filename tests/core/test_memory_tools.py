@@ -14,13 +14,13 @@ from typing import Any
 
 import pytest
 
-from kasa.core.agent import Agent
-from kasa.core.context import RETRIEVED_HEADER, ContextPacker
-from kasa.core.memory_tools import memory_tools
-from kasa.core.tools import ToolContext, ToolRegistry
-from kasa.llm.registry import ModelRole, ProviderRegistry
-from kasa.llm.tokens import HeuristicTokenizer, Tokenizer
-from kasa.llm.types import (
+from siatt.core.agent import Agent
+from siatt.core.context import RETRIEVED_HEADER, ContextPacker
+from siatt.core.memory_tools import memory_tools
+from siatt.core.tools import ToolContext, ToolRegistry
+from siatt.llm.registry import ModelRole, ProviderRegistry
+from siatt.llm.tokens import HeuristicTokenizer, Tokenizer
+from siatt.llm.types import (
     ChatRequest,
     ChatResponse,
     Delta,
@@ -33,14 +33,14 @@ from kasa.llm.types import (
     ToolUseStop,
     Usage,
 )
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.document import MemoryDoc, new_memory_id
-from kasa.memory.gitcmd import GitRepo
-from kasa.memory.index import MemoryIndex
-from kasa.memory.ltm import MemoryStore
-from kasa.memory.manifest import Manifest
-from kasa.memory.retrieve import Retriever
-from kasa.store import Store
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.document import MemoryDoc, new_memory_id
+from siatt.memory.gitcmd import GitRepo
+from siatt.memory.index import MemoryIndex
+from siatt.memory.ltm import MemoryStore
+from siatt.memory.manifest import Manifest
+from siatt.memory.retrieve import Retriever
+from siatt.store import Store
 
 
 @pytest.fixture

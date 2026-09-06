@@ -10,11 +10,11 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from kasa.core.backoff import Backoff
-from kasa.core.events import InboundEvent
-from kasa.core.inbox import Dispatcher, Inbox, LeasedEvent
-from kasa.errors import StoreError
-from kasa.store import Store
+from siatt.core.backoff import Backoff
+from siatt.core.events import InboundEvent
+from siatt.core.inbox import Dispatcher, Inbox, LeasedEvent
+from siatt.errors import StoreError
+from siatt.store import Store
 from tests.conftest import until
 
 
@@ -262,7 +262,7 @@ async def test_an_expired_lease_is_not_handed_back_to_the_drainer_still_running_
 
 
 async def test_a_lease_can_be_narrowed_to_one_row(store: Store) -> None:
-    """`only` is on the shared drainer for the job queue's sake — `kasa job
+    """`only` is on the shared drainer for the job queue's sake — `siatt job
     run` runs the row it queued and not the backlog of its kind (#127). The
     inbox has no caller for it yet, and an untested branch is one that stops
     working quietly, so this is that caller."""
@@ -446,8 +446,8 @@ async def test_a_purge_takes_only_old_delivered_rows(store: Store) -> None:
 CRASH_MID_DELIVERY = """
 import asyncio, os, signal, sys
 
-from kasa.core.inbox import Inbox
-from kasa.store import Store
+from siatt.core.inbox import Inbox
+from siatt.store import Store
 from tests.conftest import until
 
 
@@ -469,7 +469,7 @@ asyncio.run(main())
 async def test_a_process_killed_mid_delivery_is_answered_exactly_once(tmp_path: Path) -> None:
     """The acceptance criterion of #19, run for real: `kill -9` mid-turn,
     restart, and the message is answered once — not lost, not twice."""
-    db = tmp_path / "kasa.db"
+    db = tmp_path / "siatt.db"
     async with await Store.open(db) as setup:
         await Inbox(setup).enqueue(event("Ev123", text="what did we decide?"))
 

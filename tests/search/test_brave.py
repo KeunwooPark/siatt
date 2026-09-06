@@ -10,8 +10,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from kasa.errors import SearchError
-from kasa.search.brave import BraveSearch
+from siatt.errors import SearchError
+from siatt.search.brave import BraveSearch
 
 BASE_URL = "https://api.search.brave.com"
 

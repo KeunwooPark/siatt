@@ -5,11 +5,11 @@ import logging
 
 import pytest
 
-from kasa.config import Config, SearchSettings
-from kasa.core.tools import Tool, ToolContext, ToolRegistry
-from kasa.llm.types import ToolUseBlock
-from kasa.redact import MIN_SECRET_LENGTH, Redactor
-from kasa.vault import Vault, clear_cache, vault_path
+from siatt.config import Config, SearchSettings
+from siatt.core.tools import Tool, ToolContext, ToolRegistry
+from siatt.llm.types import ToolUseBlock
+from siatt.redact import MIN_SECRET_LENGTH, Redactor
+from siatt.vault import Vault, clear_cache, vault_path
 
 
 def test_known_secrets_are_replaced_with_their_variable_name() -> None:
@@ -55,7 +55,7 @@ def test_every_vault_value_seeds_exact_redaction() -> None:
     ],
 )
 def test_token_shapes_are_caught_even_when_unknown(text: str) -> None:
-    """A key Kasa was never told about, pasted into a message or echoed by a tool."""
+    """A key Siatt was never told about, pasted into a message or echoed by a tool."""
     scrubbed = Redactor().scrub(f"here: {text} <-")
     assert text not in scrubbed
     assert "[redacted]" in scrubbed
@@ -178,14 +178,14 @@ def test_fallback_provider_keys_are_covered(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_log_records_are_scrubbed() -> None:
     stream = io.StringIO()
-    parent = logging.getLogger("kasa.test_redact")
+    parent = logging.getLogger("siatt.test_redact")
     parent.addHandler(logging.StreamHandler(stream))
     parent.setLevel(logging.WARNING)
     try:
         Redactor({"TOKEN": "ghp_averylongtokenvalue"}).install(parent)
-        # Logged on a *child*, the way every module in Kasa logs. A filter on
+        # Logged on a *child*, the way every module in Siatt logs. A filter on
         # the parent logger would never see this record.
-        logging.getLogger("kasa.test_redact.child").warning(
+        logging.getLogger("siatt.test_redact.child").warning(
             "push failed with %s", "ghp_averylongtokenvalue"
         )
     finally:
@@ -261,10 +261,10 @@ def test_an_exported_search_key_is_redacted_like_every_other_credential(
 ) -> None:
     """The vault covers a stored key on its own. An exported one is only known
     to the redactor if the config's `[search]` section is read for its name."""
-    monkeypatch.setenv("KASA_BRAVE", "bsa-a-real-looking-search-key")
-    cfg = Config(search=SearchSettings(kind="brave", key_env="KASA_BRAVE"))
+    monkeypatch.setenv("SIATT_BRAVE", "bsa-a-real-looking-search-key")
+    cfg = Config(search=SearchSettings(kind="brave", key_env="SIATT_BRAVE"))
 
     scrubbed = Redactor.from_config(cfg).scrub("sent bsa-a-real-looking-search-key upstream")
 
     assert "bsa-a-real-looking-search-key" not in scrubbed
-    assert "[redacted:KASA_BRAVE]" in scrubbed
+    assert "[redacted:SIATT_BRAVE]" in scrubbed

@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.chunk import MAX_CHUNK_CHARS, MIN_CHUNK_CHARS, chunk_document, split_body
-from kasa.memory.document import MemoryDoc
-from kasa.memory.gitcmd import run_git
-from kasa.memory.index import MemoryIndex, blob_sha
-from kasa.memory.lease import INDEX_LEASE_NAME, Lease, LeaseError
-from kasa.memory.manifest import Manifest
-from kasa.store import Store
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.chunk import MAX_CHUNK_CHARS, MIN_CHUNK_CHARS, chunk_document, split_body
+from siatt.memory.document import MemoryDoc
+from siatt.memory.gitcmd import run_git
+from siatt.memory.index import MemoryIndex, blob_sha
+from siatt.memory.lease import INDEX_LEASE_NAME, Lease, LeaseError
+from siatt.memory.manifest import Manifest
+from siatt.store import Store
 
 
 @pytest.fixture
@@ -143,7 +143,7 @@ async def test_the_index_is_searchable(repo: Path, store: Store) -> None:
 
 
 async def test_machinery_is_not_indexed(repo: Path, store: Store) -> None:
-    """README.md and .kasa/ are generated; indexing them pollutes every search."""
+    """README.md and .siatt/ are generated; indexing them pollutes every search."""
     await MemoryIndex(store, repo).reindex()
     assert await chunks_of(store) == []
 
@@ -223,7 +223,7 @@ async def test_a_shrinking_file_loses_the_chunks_it_no_longer_has(repo: Path, st
 
 
 async def test_a_full_rebuild_reproduces_an_identical_index(repo: Path, store: Store) -> None:
-    """`rm index.db && kasa reindex --full` must land in the same place.
+    """`rm index.db && siatt reindex --full` must land in the same place.
 
     This is the invariant the whole design rests on: SQLite is disposable, and
     the repo is the truth.
@@ -287,7 +287,7 @@ async def test_staleness_is_detected(repo: Path, store: Store) -> None:
 
 async def test_a_file_the_indexer_refuses_is_not_staleness(repo: Path, store: Store) -> None:
     """#69. A broken file is never written to `index_state`, so hash comparison
-    alone said the repo had moved on — forever, and `kasa reindex` could not
+    alone said the repo had moved on — forever, and `siatt reindex` could not
     change it."""
     index = MemoryIndex(store, repo)
     add(repo, MemoryDoc.new(type="person", title="Jane", body="Owns deploys."))

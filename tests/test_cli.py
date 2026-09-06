@@ -19,19 +19,19 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from kasa import __version__
-from kasa.cli import _agent, app
-from kasa.config import Config, ProviderConfig, SearchSettings, StoreSettings
-from kasa.core.backoff import Backoff
-from kasa.core.events import InboundEvent
-from kasa.core.inbox import Inbox
-from kasa.llm.cost import CallRecord
-from kasa.llm.types import Usage
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.document import MemoryDoc
-from kasa.memory.gitcmd import GitRepo
-from kasa.memory.manifest import Manifest
-from kasa.store import Store
+from siatt import __version__
+from siatt.cli import _agent, app
+from siatt.config import Config, ProviderConfig, SearchSettings, StoreSettings
+from siatt.core.backoff import Backoff
+from siatt.core.events import InboundEvent
+from siatt.core.inbox import Inbox
+from siatt.llm.cost import CallRecord
+from siatt.llm.types import Usage
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.document import MemoryDoc
+from siatt.memory.gitcmd import GitRepo
+from siatt.memory.manifest import Manifest
+from siatt.store import Store
 
 runner = CliRunner()
 
@@ -54,7 +54,7 @@ def rig(tmp_path: Path) -> tuple[Path, Path]:
     config = tmp_path / "config.toml"
     config.write_text(
         f'[ltm]\nrepo = "{clone}"\nclone_path = "{clone}"\nbranch = "main"\n\n'
-        f'[store]\npath = "{tmp_path / "kasa.db"}"\n'
+        f'[store]\npath = "{tmp_path / "siatt.db"}"\n'
     )
     return config, clone
 
@@ -74,7 +74,7 @@ def test_vault_cli_never_accepts_or_lists_values(
 ) -> None:
     config, _ = rig
     path = tmp_path / "private" / "vault.json"
-    monkeypatch.setenv("KASA_VAULT", str(path))
+    monkeypatch.setenv("SIATT_VAULT", str(path))
 
     stored = runner.invoke(
         app, ["vault", "set", "NOTION", "--config", str(config)], input="notion-secret-value\n"
@@ -115,7 +115,7 @@ def test_reindex_writes_nothing_when_the_clone_has_no_skeleton(
 
     assert result.exit_code == 1
     assert "no memory skeleton" in result.output
-    assert chunks(tmp_path / "kasa.db") == 0, "a failed reindex left half its work behind"
+    assert chunks(tmp_path / "siatt.db") == 0, "a failed reindex left half its work behind"
 
 
 def test_reindex_rebuilds_both_halves_once_the_repo_is_bootstrapped(
@@ -131,7 +131,7 @@ def test_reindex_rebuilds_both_halves_once_the_repo_is_bootstrapped(
     assert result.exit_code == 0, result.output
     assert "1 file(s) indexed" in result.output
     assert "manifest already describes all 1 memories" in result.output
-    assert chunks(tmp_path / "kasa.db") > 0
+    assert chunks(tmp_path / "siatt.db") > 0
 
 
 def test_audit_lists_every_memory_by_scope_even_when_manifest_is_stale(
@@ -191,19 +191,19 @@ def config_for(db: Path) -> Path:
 
 
 def test_db_path_prints_something_a_shell_can_substitute(deep: Path) -> None:
-    db = deep / "kasa.db"
+    db = deep / "siatt.db"
     result = runner.invoke(app, ["db", "path", "--config", str(config_for(db))])
 
     assert result.exit_code == 0, result.output
     assert len(str(db)) > 80, "the fixture has to be long enough to have been wrapped"
-    assert result.stdout == f"{db}\n", "one line, unmodified — this is $(kasa db path)"
+    assert result.stdout == f"{db}\n", "one line, unmodified — this is $(siatt db path)"
 
 
 def test_a_path_containing_brackets_is_not_read_as_markup(tmp_path: Path) -> None:
     """rich deletes `[dim]`-shaped text. A directory is allowed to be called that."""
     root = tmp_path / "[dim]"
     root.mkdir()
-    db = root / "kasa.db"
+    db = root / "siatt.db"
 
     result = runner.invoke(app, ["db", "path", "--config", str(config_for(db))])
 
@@ -217,13 +217,13 @@ def test_version_is_one_bare_line() -> None:
 
 def test_config_puts_its_header_on_stderr_so_the_json_can_be_piped(deep: Path) -> None:
     """The path says where the JSON came from: a comment on the output, not part
-    of it. On stdout it was the first thing `kasa config | jq` choked on."""
-    config = config_for(deep / "kasa.db")
+    of it. On stdout it was the first thing `siatt config | jq` choked on."""
+    config = config_for(deep / "siatt.db")
 
     result = runner.invoke(app, ["config", "--config", str(config)])
 
     assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)["store"]["path"] == str(deep / "kasa.db")
+    assert json.loads(result.stdout)["store"]["path"] == str(deep / "siatt.db")
     assert str(config) in result.stderr
 
 
@@ -283,10 +283,10 @@ def test_the_log_record_names_the_file_once_too(
     GitRepo.at(clone).commit("memory: seed")
     path = broken(clone)
 
-    with caplog.at_level(logging.WARNING, logger="kasa.memory.index"):
+    with caplog.at_level(logging.WARNING, logger="siatt.memory.index"):
         runner.invoke(app, ["reindex", "--config", str(config)])
 
-    message = next(r.getMessage() for r in caplog.records if r.name == "kasa.memory.index")
+    message = next(r.getMessage() for r in caplog.records if r.name == "siatt.memory.index")
     assert message.count(path) == 1, message
     assert "no YAML frontmatter" in message
 
@@ -295,7 +295,7 @@ def test_the_cost_table_does_not_truncate_the_model_name(deep: Path) -> None:
     """#80. The model column is the row's identity, and rich's 80-column
     fallback put an ellipsis in it as soon as the output was piped — so two
     models from one provider became the same row."""
-    db = deep / "kasa.db"
+    db = deep / "siatt.db"
     config = config_for(db)
     model = "accounts/fireworks/models/kimi-k3-instruct-0905-preview"
 
@@ -335,7 +335,7 @@ def test_the_cost_table_does_not_truncate_the_model_name(deep: Path) -> None:
 def test_inbox_status_reports_a_state_with_no_rows_as_zero(tmp_path: Path) -> None:
     """A missing line reads as "no idea"; a zero reads as "none". The states are
     printed in a fixed order for that reason."""
-    db = tmp_path / "kasa.db"
+    db = tmp_path / "siatt.db"
     config = config_for(db)
 
     async def seed() -> None:
@@ -359,7 +359,7 @@ def test_inbox_status_reports_a_state_with_no_rows_as_zero(tmp_path: Path) -> No
 
 def test_inbox_retry_puts_a_dead_letter_back(tmp_path: Path) -> None:
     """Dead-lettering is a pause for a human. This is the human."""
-    db = tmp_path / "kasa.db"
+    db = tmp_path / "siatt.db"
     config = config_for(db)
 
     async def seed() -> None:
@@ -387,7 +387,7 @@ def test_inbox_retry_puts_a_dead_letter_back(tmp_path: Path) -> None:
 def test_run_slack_without_tokens_says_so(tmp_path: Path) -> None:
     """It fails here, before the store is opened, rather than inside a socket
     library minutes into a deploy."""
-    config = config_for(tmp_path / "kasa.db")
+    config = config_for(tmp_path / "siatt.db")
 
     result = runner.invoke(app, ["run", "--slack", "--config", str(config)])
 
@@ -396,9 +396,9 @@ def test_run_slack_without_tokens_says_so(tmp_path: Path) -> None:
 
 
 def test_job_run_reports_a_job_that_failed(tmp_path: Path) -> None:
-    """`kasa job run` exits non-zero with the reason, so it is usable in a
+    """`siatt job run` exits non-zero with the reason, so it is usable in a
     script and readable in a terminal."""
-    config = config_for(tmp_path / "kasa.db")
+    config = config_for(tmp_path / "siatt.db")
 
     result = runner.invoke(app, ["job", "run", "promote", "--config", str(config)])
 
@@ -410,7 +410,7 @@ def test_job_run_names_the_job_it_ran_past_a_backlog(
     rig: tuple[Path, Path], tmp_path: Path
 ) -> None:
     """The reported row has to be the one the command queued, not whichever of
-    that kind happened to be oldest. With rows already due, `kasa job run`
+    that kind happened to be oldest. With rows already due, `siatt job run`
     printed `reindex pending: None` and exited 1 without running anything."""
     config, clone = rig
     bootstrap(clone)
@@ -418,7 +418,7 @@ def test_job_run_names_the_job_it_ran_past_a_backlog(
     GitRepo.at(clone).commit("memory: seed")
 
     async def backlog() -> None:
-        async with await Store.open(tmp_path / "kasa.db") as store:
+        async with await Store.open(tmp_path / "siatt.db") as store:
             for n in range(5):
                 await store.enqueue_job(
                     job_id=f"older-{n}",
@@ -434,7 +434,7 @@ def test_job_run_names_the_job_it_ran_past_a_backlog(
     assert result.exit_code == 0, result.output
     assert "reindex finished" in result.output
 
-    conn = sqlite3.connect(tmp_path / "kasa.db")
+    conn = sqlite3.connect(tmp_path / "siatt.db")
     try:
         backlog_states = [
             row[0] for row in conn.execute("SELECT state FROM jobs WHERE id LIKE 'older-%'")
@@ -474,7 +474,7 @@ def test_job_run_does_not_call_a_reindex_that_could_not_lock_finished(
 
     assert result.exit_code == 1, result.output
     assert "No locks available" in result.output
-    assert chunks(tmp_path / "kasa.db") == 0
+    assert chunks(tmp_path / "siatt.db") == 0
 
 
 def test_job_run_says_a_job_never_ran_rather_than_None(rig: tuple[Path, Path]) -> None:
@@ -504,7 +504,7 @@ def test_job_list_names_what_this_build_knows_when_nothing_is_queued(
 def test_task_add_reads_the_next_fires_back_in_the_zone_it_was_given(tmp_path: Path) -> None:
     """A person cannot check `0 9 * * 1-5`, and can check "Mon 07 Sep 09:00
     Asia/Seoul". Confirmation is the whole reason `add` prints anything."""
-    config = config_for(tmp_path / "kasa.db")
+    config = config_for(tmp_path / "siatt.db")
 
     add = ["task", "add", "the overnight AI news", "--cron", "0 9 * * 1-5"]
     result = runner.invoke(app, [*add, "--tz", "Asia/Seoul", "--config", str(config)])
@@ -517,7 +517,7 @@ def test_task_add_reads_the_next_fires_back_in_the_zone_it_was_given(tmp_path: P
 def test_task_add_says_so_when_nothing_in_this_build_will_ever_fire_it(tmp_path: Path) -> None:
     """A schedule that silently never runs is the worst thing this command
     could do. No Slack means no daemon, and a terminal is not alive at nine."""
-    config = config_for(tmp_path / "kasa.db")
+    config = config_for(tmp_path / "siatt.db")
 
     result = runner.invoke(
         app,
@@ -529,7 +529,7 @@ def test_task_add_says_so_when_nothing_in_this_build_will_ever_fire_it(tmp_path:
 
 
 def test_task_add_refuses_a_schedule_that_fires_too_often(tmp_path: Path) -> None:
-    config = config_for(tmp_path / "kasa.db")
+    config = config_for(tmp_path / "siatt.db")
 
     result = runner.invoke(
         app, ["task", "add", "spam me", "--cron", "* * * * *", "--config", str(config)]
@@ -542,9 +542,9 @@ def test_task_add_refuses_a_schedule_that_fires_too_often(tmp_path: Path) -> Non
 def test_task_list_shows_a_schedule_that_stopped_reading_rather_than_a_blank(
     tmp_path: Path,
 ) -> None:
-    """A zone this machine has no database entry for is exactly what `kasa task
+    """A zone this machine has no database entry for is exactly what `siatt task
     list` is for. An empty cell would say nothing was wrong."""
-    db = tmp_path / "kasa.db"
+    db = tmp_path / "siatt.db"
     config = config_for(db)
     runner.invoke(
         app, ["task", "add", "morning news", "--cron", "0 9 * * *", "--config", str(config)]
@@ -563,7 +563,7 @@ def test_task_list_shows_a_schedule_that_stopped_reading_rather_than_a_blank(
 
 
 def test_task_pause_resume_and_rm_move_the_row_and_say_which(tmp_path: Path) -> None:
-    db = tmp_path / "kasa.db"
+    db = tmp_path / "siatt.db"
     config = config_for(db)
     runner.invoke(
         app, ["task", "add", "morning news", "--cron", "0 9 * * *", "--config", str(config)]
@@ -591,7 +591,7 @@ def test_task_pause_resume_and_rm_move_the_row_and_say_which(tmp_path: Path) -> 
 
 
 def test_task_commands_on_an_id_that_is_not_there_exit_non_zero(tmp_path: Path) -> None:
-    config = config_for(tmp_path / "kasa.db")
+    config = config_for(tmp_path / "siatt.db")
 
     for command in ("rm", "pause", "resume", "run"):
         result = runner.invoke(app, ["task", command, "01NOPE", "--config", str(config)])
@@ -603,7 +603,7 @@ def test_task_run_queues_the_turn_without_waiting_for_the_clock(tmp_path: Path) 
     """It queues; it does not answer. What answers an inbox row is a running
     dispatcher, and this is how a terminal checks that a task reaches the queue
     with the right session and scope."""
-    db = tmp_path / "kasa.db"
+    db = tmp_path / "siatt.db"
     config = config_for(db)
     add = ["task", "add", "morning news", "--cron", "0 9 * * *", "--session", "cli:1"]
     runner.invoke(app, [*add, "--config", str(config)])
@@ -629,7 +629,7 @@ def test_task_run_queues_the_turn_without_waiting_for_the_clock(tmp_path: Path) 
 
 
 def test_job_retry_puts_a_dead_letter_back(tmp_path: Path) -> None:
-    db = tmp_path / "kasa.db"
+    db = tmp_path / "siatt.db"
     config = config_for(db)
 
     async def seed() -> None:
@@ -660,7 +660,7 @@ async def _tool_names(cfg: Config, *, daemon: bool = False) -> set[str]:
 def _searchable(tmp_path: Path, **search: object) -> Config:
     return Config(
         llm={"chat": ProviderConfig(kind="anthropic", model="claude-opus-5")},
-        store=StoreSettings(path=str(tmp_path / "kasa.db")),
+        store=StoreSettings(path=str(tmp_path / "siatt.db")),
         search=SearchSettings(**search),  # type: ignore[arg-type]
     )
 
@@ -679,9 +679,9 @@ async def test_a_configured_search_registers_the_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    monkeypatch.setenv("KASA_BRAVE", "bsa-1")
+    monkeypatch.setenv("SIATT_BRAVE", "bsa-1")
 
-    names = await _tool_names(_searchable(tmp_path, kind="brave", key_env="KASA_BRAVE"))
+    names = await _tool_names(_searchable(tmp_path, kind="brave", key_env="SIATT_BRAVE"))
 
     assert "web_search" in names
 
@@ -690,11 +690,11 @@ async def test_a_search_key_that_will_not_resolve_does_not_stop_the_daemon(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Same posture as an unavailable memory repo: answer without the
-    capability rather than refuse to start, and let `kasa doctor` say why."""
+    capability rather than refuse to start, and let `siatt doctor` say why."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    monkeypatch.delenv("KASA_BRAVE", raising=False)
+    monkeypatch.delenv("SIATT_BRAVE", raising=False)
 
-    names = await _tool_names(_searchable(tmp_path, kind="brave", key_env="KASA_BRAVE"))
+    names = await _tool_names(_searchable(tmp_path, kind="brave", key_env="SIATT_BRAVE"))
 
     assert "web_search" not in names
     assert "current_time" in names, "and the rest of the session still works"
@@ -711,7 +711,7 @@ async def test_the_repl_gets_no_scheduling_tools(
 ) -> None:
     """A terminal is not alive at nine in the morning. A tool that quietly
     created rows nothing would ever fire is worse than one that is absent —
-    and `kasa task add`, which says so, is still there."""
+    and `siatt task add`, which says so, is still there."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
 
     assert not SCHEDULE_TOOLS & await _tool_names(_searchable(tmp_path))

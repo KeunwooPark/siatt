@@ -9,17 +9,17 @@ from typing import Any
 
 import pytest
 
-from kasa.config import MemorySettings, ReorganizeSettings
-from kasa.llm.registry import ModelRole, ProviderRegistry
-from kasa.llm.types import ChatRequest, ChatResponse, Delta, Message, Usage
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.document import MemoryDoc
-from kasa.memory.gitcmd import GitRepo
-from kasa.memory.layout import INDEX_PATH
-from kasa.memory.ltm import MemoryStore
-from kasa.memory.manifest import Manifest
-from kasa.runner.reorganize import Librarian
-from kasa.store import Store
+from siatt.config import MemorySettings, ReorganizeSettings
+from siatt.llm.registry import ModelRole, ProviderRegistry
+from siatt.llm.types import ChatRequest, ChatResponse, Delta, Message, Usage
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.document import MemoryDoc
+from siatt.memory.gitcmd import GitRepo
+from siatt.memory.layout import INDEX_PATH
+from siatt.memory.ltm import MemoryStore
+from siatt.memory.manifest import Manifest
+from siatt.runner.reorganize import Librarian
+from siatt.store import Store
 
 #: Two files that plainly say the same thing, and one that plainly does not.
 DEPLOYS_A = "Priya Raman owns the deploy pipeline and runs the release checklist every Thursday."
@@ -305,7 +305,7 @@ async def test_a_link_the_manifest_cannot_account_for_is_reported_not_rewritten(
     pointer_path = write_memory(clone, pointer)
     before = (clone / pointer_path).read_text()
 
-    with caplog.at_level("WARNING", logger="kasa.runner.reorganize"):
+    with caplog.at_level("WARNING", logger="siatt.runner.reorganize"):
         result = await librarian_for(clone, store, Scripted()).run()
 
     assert result.repaired == 0
@@ -362,7 +362,7 @@ async def test_whatever_somebody_wrote_above_the_marker_survives(clone: Path, st
     index = clone / INDEX_PATH
     index.write_text(
         "# Our memory\n\nRead `people/` first.\n\n"
-        "<!-- Kasa regenerates the listing below. Text above this comment is preserved. -->\n\n"
+        "<!-- Siatt regenerates the listing below. Text above this comment is preserved. -->\n\n"
         "stale listing\n"
     )
     write_memory(clone, fact("Deploy ownership", DEPLOYS_A))
@@ -405,7 +405,7 @@ async def test_every_reorganization_is_a_single_revertable_commit(
 
     commits = repo.run("log", "--format=%H", f"{before}..HEAD").split()
     assert len(commits) == 1
-    assert "Kasa-Job: reorganize" in repo.run("log", "-1", "--format=%B")
+    assert "Siatt-Job: reorganize" in repo.run("log", "-1", "--format=%B")
 
     repo.run("revert", "--no-edit", commits[0])
     assert len(live_facts(clone)) == 2, "every decision put back"
@@ -447,5 +447,5 @@ async def test_the_corpus_travels_as_untrusted_data(clone: Path, store: Store) -
 
     await librarian_for(clone, store, provider).run()
 
-    assert "KASA_UNTRUSTED_" in provider.prompts[0]
+    assert "SIATT_UNTRUSTED_" in provider.prompts[0]
     assert provider.requests[0].tools == ()

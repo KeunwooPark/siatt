@@ -1,6 +1,6 @@
 """Where a fetch may go.
 
-Every test here is an address somebody would like Kasa to connect to. The guard
+Every test here is an address somebody would like Siatt to connect to. The guard
 is the only thing between a URL a model read off a web page and a socket on the
 network this daemon runs on, so the cases are written as the attack rather than
 as the branch: `localhost`, the metadata service, the same thing spelled in
@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from kasa.errors import Blocked
-from kasa.fetch.guard import approve
+from siatt.errors import Blocked
+from siatt.fetch.guard import approve
 
 
 def answering(*addresses: str) -> object:

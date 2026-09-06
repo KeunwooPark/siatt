@@ -15,6 +15,6 @@ jobs:
       - run: uv sync --all-extras --dev
       - name: Connect to the dedicated Slack test workspace
         env:
-          KASA_SLACK_SMOKE_APP_TOKEN: ${{ secrets.KASA_SLACK_SMOKE_APP_TOKEN }}
-          KASA_SLACK_SMOKE_BOT_TOKEN: ${{ secrets.KASA_SLACK_SMOKE_BOT_TOKEN }}
+          SIATT_SLACK_SMOKE_APP_TOKEN: ${{ secrets.SIATT_SLACK_SMOKE_APP_TOKEN }}
+          SIATT_SLACK_SMOKE_BOT_TOKEN: ${{ secrets.SIATT_SLACK_SMOKE_BOT_TOKEN }}
         run: uv run pytest tests/e2e/test_slack_external.py -m external -q

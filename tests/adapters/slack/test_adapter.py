@@ -15,21 +15,21 @@ pytest.importorskip("slack_bolt", reason="the `slack` extra")
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 
-from kasa.adapters import slack as package
-from kasa.adapters.slack.app import NO_HTTP_VERIFICATION, SlackAdapter
-from kasa.adapters.slack.events import SlackContext, normalize
-from kasa.core.agent import Agent
-from kasa.core.context import ContextPacker
-from kasa.core.revise import TOMBSTONE
-from kasa.core.tools import ToolRegistry
-from kasa.llm.registry import ModelRole, ProviderRegistry
-from kasa.llm.tokens import Tokenizer
-from kasa.llm.types import ChatRequest, Delta
-from kasa.store import Store
+from siatt.adapters import slack as package
+from siatt.adapters.slack.app import NO_HTTP_VERIFICATION, SlackAdapter
+from siatt.adapters.slack.events import SlackContext, normalize
+from siatt.core.agent import Agent
+from siatt.core.context import ContextPacker
+from siatt.core.revise import TOMBSTONE
+from siatt.core.tools import ToolRegistry
+from siatt.llm.registry import ModelRole, ProviderRegistry
+from siatt.llm.tokens import Tokenizer
+from siatt.llm.types import ChatRequest, Delta
+from siatt.store import Store
 from tests.conftest import until
 from tests.core.test_agent import ScriptedProvider, says
 
-BOT = "U0KASA"
+BOT = "U0SIATT"
 TEAM = "T0TEAM"
 HUMAN = "U0HUMAN"
 
@@ -248,10 +248,10 @@ async def test_an_event_that_cannot_be_read_is_ignored_rather_than_raised(
     async def boom(*args: Any, **kwargs: Any) -> Any:
         raise ValueError("a shape nobody anticipated")
 
-    monkeypatch.setattr("kasa.adapters.slack.app.normalize", boom)
+    monkeypatch.setattr("siatt.adapters.slack.app.normalize", boom)
     adapter, _ = make_adapter(store, tokenizer)
 
-    with caplog.at_level(logging.ERROR, logger="kasa.adapters.slack.app"):
+    with caplog.at_level(logging.ERROR, logger="siatt.adapters.slack.app"):
         await adapter.on_event(mention())
 
     assert "could not read a slack event" in caplog.text
@@ -273,7 +273,7 @@ async def test_ingress_still_works_after_an_event_it_could_not_read(
             raise ValueError("a shape nobody anticipated")
         return await real(*args, **kwargs)
 
-    monkeypatch.setattr("kasa.adapters.slack.app.normalize", once)
+    monkeypatch.setattr("siatt.adapters.slack.app.normalize", once)
     running = asyncio.create_task(adapter.runtime.run())
     try:
         await adapter.on_event(mention(ts="1700000000.000100"))
@@ -368,7 +368,7 @@ async def test_the_thread_shows_a_reply_before_the_turn_is_over(
     store: Store, tokenizer: Tokenizer
 ) -> None:
     """The point of #22. A turn that says nothing for thirty seconds is
-    indistinguishable from one that broke, and somebody who thinks Kasa broke
+    indistinguishable from one that broke, and somebody who thinks Siatt broke
     asks again — a second turn, a second model call, two answers."""
     provider = SlowProvider([says("noted")] * 4, delay=0.3)
     adapter, client = make_adapter(store, tokenizer, provider=provider)
@@ -450,7 +450,7 @@ async def answer_once(adapter: SlackAdapter, client: RecordingClient) -> None:
         await asyncio.wait_for(running, timeout=10.0)
 
 
-async def test_editing_a_message_rewrites_what_kasa_stored(
+async def test_editing_a_message_rewrites_what_siatt_stored(
     store: Store, tokenizer: Tokenizer
 ) -> None:
     """The whole chain, which no unit test covers: the turn records the Slack
@@ -514,7 +514,7 @@ async def test_a_revision_never_reaches_the_agent(store: Store, tokenizer: Token
     assert len(provider.requests) == 1, "and no second turn ran"
 
 
-async def test_kasas_own_streamed_updates_are_not_revisions(
+async def test_siatts_own_streamed_updates_are_not_revisions(
     store: Store, tokenizer: Tokenizer
 ) -> None:
     """A streamed reply is one `chat.update` per second, and Slack echoes every
@@ -587,7 +587,7 @@ async def test_everybody_a_message_saw_is_recorded_for_mapping(
 
 def test_the_adapter_resolves_through_the_lazy_import() -> None:
     """#119 put `SlackAdapter` behind a module `__getattr__` so that
-    `kasa.adapters.slack.events` imports on an install that never asked for the
+    `siatt.adapters.slack.events` imports on an install that never asked for the
     `slack` extra. The two tests that cover *that* half run in subprocesses,
     because making `slack_bolt` unimportable inside an environment that has it
     is the only way to reproduce a missing extra — and a subprocess is
@@ -679,7 +679,7 @@ async def test_a_reaction_never_reaches_the_agent(store: Store, tokenizer: Token
     assert len(provider.requests) == 1
 
 
-async def test_a_reaction_on_a_message_kasa_never_posted_does_nothing(
+async def test_a_reaction_on_a_message_siatt_never_posted_does_nothing(
     store: Store, tokenizer: Tokenizer
 ) -> None:
     adapter, _ = make_adapter(store, tokenizer)

@@ -15,14 +15,14 @@ from typing import Any
 
 import pytest
 
-from kasa.config import ForgetSettings, MemorySettings
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.document import MemoryDoc
-from kasa.memory.gitcmd import GitRepo
-from kasa.memory.ltm import MemoryStore
-from kasa.memory.manifest import Manifest
-from kasa.runner.forget import Collector
-from kasa.store import Store
+from siatt.config import ForgetSettings, MemorySettings
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.document import MemoryDoc
+from siatt.memory.gitcmd import GitRepo
+from siatt.memory.ltm import MemoryStore
+from siatt.memory.manifest import Manifest
+from siatt.runner.forget import Collector
+from siatt.store import Store
 
 NOW = datetime(2026, 9, 4, tzinfo=UTC)
 
@@ -136,7 +136,7 @@ async def test_archiving_and_collecting_happen_in_one_commit(clone: Path, store:
     assert len(result.archived) == 1 and len(result.collected) == 1
     commits = GitRepo.at(clone).run("log", "--format=%H", f"{before}..HEAD").split()
     assert len(commits) == 1
-    assert "Kasa-Job: forget" in GitRepo.at(clone).run("log", "-1", "--format=%B")
+    assert "Siatt-Job: forget" in GitRepo.at(clone).run("log", "-1", "--format=%B")
 
 
 # -- the acceptance criterion ------------------------------------------------

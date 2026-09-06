@@ -6,8 +6,8 @@ be loose in the safe direction.
 
 from __future__ import annotations
 
-from kasa.llm.tokens import HeuristicTokenizer, count_message, count_messages, default_tokenizer
-from kasa.llm.types import Message, TextBlock, ToolResultBlock, ToolUseBlock
+from siatt.llm.tokens import HeuristicTokenizer, count_message, count_messages, default_tokenizer
+from siatt.llm.types import Message, TextBlock, ToolResultBlock, ToolUseBlock
 
 
 def test_empty_text_costs_nothing() -> None:

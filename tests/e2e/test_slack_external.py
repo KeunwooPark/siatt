@@ -9,36 +9,36 @@ import time
 
 import pytest
 
-from tests.e2e.conftest import KasaRig
+from tests.e2e.conftest import SiattRig
 
 
 @pytest.mark.external
-def test_live_slack_socket_mode_connects(kasa_rig: KasaRig) -> None:
+def test_live_slack_socket_mode_connects(siatt_rig: SiattRig) -> None:
     """A protected smoke test for the dedicated Slack QA workspace.
 
     Local CI exercises ingress and egress against the protocol-level fake. This
     optional check catches token rotation, app installation, and Socket Mode
     configuration drift without putting third-party credentials in PR jobs.
     """
-    app_token = os.environ.get("KASA_SLACK_SMOKE_APP_TOKEN")
-    bot_token = os.environ.get("KASA_SLACK_SMOKE_BOT_TOKEN")
+    app_token = os.environ.get("SIATT_SLACK_SMOKE_APP_TOKEN")
+    bot_token = os.environ.get("SIATT_SLACK_SMOKE_BOT_TOKEN")
     if not app_token or not bot_token:
         pytest.skip("dedicated Slack smoke credentials are not configured")
 
-    with kasa_rig.config.open("a") as config:
+    with siatt_rig.config.open("a") as config:
         config.write(
-            '\n[slack]\napp_token_env = "KASA_SLACK_SMOKE_APP_TOKEN"\n'
-            'bot_token_env = "KASA_SLACK_SMOKE_BOT_TOKEN"\nstream = false\n'
+            '\n[slack]\napp_token_env = "SIATT_SLACK_SMOKE_APP_TOKEN"\n'
+            'bot_token_env = "SIATT_SLACK_SMOKE_BOT_TOKEN"\nstream = false\n'
         )
     process = subprocess.Popen(
-        [sys.executable, "-m", "kasa.cli", "run", "--slack", "--config", str(kasa_rig.config)],
+        [sys.executable, "-m", "siatt.cli", "run", "--slack", "--config", str(siatt_rig.config)],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env=kasa_rig.env
+        env=siatt_rig.env
         | {
-            "KASA_SLACK_SMOKE_APP_TOKEN": app_token,
-            "KASA_SLACK_SMOKE_BOT_TOKEN": bot_token,
+            "SIATT_SLACK_SMOKE_APP_TOKEN": app_token,
+            "SIATT_SLACK_SMOKE_BOT_TOKEN": bot_token,
         },
     )
     assert process.stdout is not None

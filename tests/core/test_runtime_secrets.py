@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kasa.core.agent import AgentResult
-from kasa.core.events import InboundEvent
-from kasa.core.runtime import Runtime, one_message
-from kasa.redact import Redactor
-from kasa.store import Store
+from siatt.core.agent import AgentResult
+from siatt.core.events import InboundEvent
+from siatt.core.runtime import Runtime, one_message
+from siatt.redact import Redactor
+from siatt.store import Store
 
 
 class FakeAgent:

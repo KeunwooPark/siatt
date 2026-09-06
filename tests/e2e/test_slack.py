@@ -5,11 +5,11 @@ import sqlite3
 
 import pytest
 
-from tests.e2e.conftest import KasaRig
+from tests.e2e.conftest import SiattRig
 from tests.e2e.test_shutdown import FakeSlack, daemon, eventually, fake_slack, stop  # noqa: F401
 
 
-def inbox_count(rig: KasaRig) -> int:
+def inbox_count(rig: SiattRig) -> int:
     if not rig.database.exists():
         return 0
     connection = sqlite3.connect(rig.database)
@@ -22,12 +22,12 @@ def inbox_count(rig: KasaRig) -> int:
 
 
 def test_slack_ingress_routing_deduplication_and_replies(
-    kasa_rig: KasaRig, request: pytest.FixtureRequest
+    siatt_rig: SiattRig, request: pytest.FixtureRequest
 ) -> None:
     slack_server: FakeSlack = request.getfixturevalue("fake_slack")
-    process = daemon(kasa_rig, slack_server)
+    process = daemon(siatt_rig, slack_server)
     assert slack_server.connected.wait(timeout=5)
-    slack_server.ack_observer = lambda: inbox_count(kasa_rig)
+    slack_server.ack_observer = lambda: inbox_count(siatt_rig)
 
     slack_server.event(
         event_id="Ev-mention",
@@ -61,7 +61,7 @@ def test_slack_ingress_routing_deduplication_and_replies(
     )
     eventually(lambda: len(slack_server.posts), lambda count: count == 2)
 
-    # Once Kasa belongs to a channel thread, a reply routes to the same
+    # Once Siatt belongs to a channel thread, a reply routes to the same
     # session without needing another mention.
     slack_server.event(
         event_id="Ev-thread",
@@ -77,7 +77,7 @@ def test_slack_ingress_routing_deduplication_and_replies(
 
     # Seeing every ack means Bolt returned to Slack. At that point each
     # accepted event is already a committed inbox row; ignored events are not.
-    connection = sqlite3.connect(kasa_rig.database)
+    connection = sqlite3.connect(siatt_rig.database)
     try:
         inbox = connection.execute(
             "SELECT external_id, payload, state FROM inbox ORDER BY id"
@@ -107,4 +107,4 @@ def test_slack_ingress_routing_deduplication_and_replies(
         ("D_PRIVATE", "20.001"),
         ("C_DEPLOY", "10.001"),
     ]
-    assert len(kasa_rig.server.requests) == 3
+    assert len(siatt_rig.server.requests) == 3

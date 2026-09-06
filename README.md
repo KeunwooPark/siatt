@@ -1,4 +1,4 @@
-# kasa
+# siatt
 
 A long-running, memory-native AI agent server reachable over chat.
 
@@ -14,9 +14,9 @@ See [`docs/DESIGN.md`](docs/DESIGN.md) for the full design.
 **v1 — it remembers on purpose.** Long-term memory lives in a private git repo
 of Markdown files. Retrieval is lexical (FTS5 + BM25, scope-filtered) and runs
 on every turn; the agent can also search, read, and propose memories with tools.
-See the [milestones](https://github.com/KeunwooPark/kasa/milestones).
+See the [milestones](https://github.com/KeunwooPark/siatt/milestones).
 
-**v2 in progress — it lives in Slack.** `kasa run --slack` connects over Socket
+**v2 in progress — it lives in Slack.** `siatt run --slack` connects over Socket
 Mode, so a self-hosted daemon needs no public ingress. Events land in a durable
 queue and are acknowledged immediately; one actor per thread answers them in
 order, and many threads at once.
@@ -41,7 +41,7 @@ the same memory and the same tools as when you asked.
 | `identity` | every 15 min | maps each Slack user id to one `people/` memory, and follows renames into it |
 | `task_run` | when a standing task is due | starts the turn a person scheduled, in the conversation they scheduled it from |
 
-Those first seven ship with Kasa and are the same in every install: they are how
+Those first seven ship with Siatt and are the same in every install: they are how
 it keeps its own memory in order. `task_run` is the other kind. It does not know
 what it is running until it reads the `tasks` table, which holds whatever
 schedules people have set up on this install — user data, not product
@@ -60,22 +60,22 @@ deterministic code validates first, and no delete is ever a force-push.
 ```bash
 uv sync --dev
 export ANTHROPIC_API_KEY=...     # or OPENAI_API_KEY
-export KASA_GITHUB_TOKEN=...     # fine-grained PAT, contents: write
-uv run kasa init
-uv run kasa run
+export SIATT_GITHUB_TOKEN=...     # fine-grained PAT, contents: write
+uv run siatt init
+uv run siatt run
 ```
 
 For Slack, install the `slack` extra, create an app with Socket Mode enabled,
-and export the two tokens `kasa init` asked for the names of:
+and export the two tokens `siatt init` asked for the names of:
 
 ```bash
 uv sync --extra slack
 export SLACK_APP_TOKEN=xapp-...   # Socket Mode, connections:write
 export SLACK_BOT_TOKEN=xoxb-...   # app_mentions:read, chat:write, im:history
-uv run kasa run --slack
+uv run siatt run --slack
 ```
 
-Kasa answers when it is mentioned in a channel it has been invited to, in any
+Siatt answers when it is mentioned in a channel it has been invited to, in any
 thread it is already part of, and in a DM. Everything else it hears, it ignores.
 Set `slack.allowed_channels` to narrow that further.
 
@@ -84,63 +84,63 @@ the answer is complete — never per token, which flickers and would spend the
 turn being rate limited. Under rate-limit pressure it drops the intermediate
 frames and keeps the answer. Set `slack.stream = false` for one message a turn.
 
-Editing a message rewrites what Kasa stored and marks any candidate fact drawn
+Editing a message rewrites what Siatt stored and marks any candidate fact drawn
 from it stale; deleting one leaves a tombstone in the transcript and lowers the
 confidence of what was drawn from it. Neither rewrites the memory repo: when
-the claim is already a file there, Kasa queues a review — `kasa review list` —
+the claim is already a file there, Siatt queues a review — `siatt review list` —
 because a retraction is not a correction and the file may have been merged or
 built on since.
 
-Reactions on Kasa's own answers are the cheapest quality signal there is. 👍
+Reactions on Siatt's own answers are the cheapest quality signal there is. 👍
 raises the salience of the memories that produced the answer; ❌ lowers their
 confidence and queues a review. One person is one vote per answer, and
 `slack.reactions` maps emoji to verdicts.
 
-`kasa init` walks through the private GitHub repo that holds long-term memory —
+`siatt init` walks through the private GitHub repo that holds long-term memory —
 creating it if it does not exist — clones it, lays out the memory skeleton, and
-writes `~/.config/kasa/config.toml`. It refuses to configure a public repo, and
+writes `~/.config/siatt/config.toml`. It refuses to configure a public repo, and
 it is safe to re-run: nothing already in the repo is overwritten.
 
 The config file holds **no secrets**, only the names of the environment
 variables that carry them. See Appendix A of the design doc for its shape, or
-`uv run kasa config` to print what is currently resolved.
+`uv run siatt config` to print what is currently resolved.
 
-To try it without any of that, skip `init`: with no config file, Kasa
+To try it without any of that, skip `init`: with no config file, Siatt
 synthesizes one from whatever API key is exported and runs without memory.
 
 ```
-kasa init         interactive setup; bootstraps the memory repo
-kasa run          start the terminal adapter
-kasa run --slack  serve Slack over Socket Mode
-kasa reindex      rebuild the search index from the memory repo
-kasa why "<q>"    show the full retrieval trace for a question
-kasa doctor       check config, tokens, repo privacy, search, and the clone
-kasa config       print the resolved configuration
-kasa cost         token and spend totals
-kasa inbox status what is queued, and what stopped being retried
-kasa inbox retry  requeue every dead-lettered event
-kasa job run <k>  run a background job now
-kasa job list     what each job is doing, and when it last ran
-kasa job retry    requeue every dead-lettered job
-kasa task list    standing tasks, and when each fires next
-kasa task add     create one: `--cron "0 9 * * 1-5" --tz Asia/Seoul`
-kasa task rm      delete one
-kasa task pause   stop it firing, without forgetting it
-kasa task resume  start it again, and clear the failures that stopped it
-kasa task run     fire one now, without waiting for the clock
-kasa review list  what is waiting on a person, and why
-kasa review done  mark a review as dealt with
-kasa db migrate   apply pending migrations
+siatt init         interactive setup; bootstraps the memory repo
+siatt run          start the terminal adapter
+siatt run --slack  serve Slack over Socket Mode
+siatt reindex      rebuild the search index from the memory repo
+siatt why "<q>"    show the full retrieval trace for a question
+siatt doctor       check config, tokens, repo privacy, search, and the clone
+siatt config       print the resolved configuration
+siatt cost         token and spend totals
+siatt inbox status what is queued, and what stopped being retried
+siatt inbox retry  requeue every dead-lettered event
+siatt job run <k>  run a background job now
+siatt job list     what each job is doing, and when it last ran
+siatt job retry    requeue every dead-lettered job
+siatt task list    standing tasks, and when each fires next
+siatt task add     create one: `--cron "0 9 * * 1-5" --tz Asia/Seoul`
+siatt task rm      delete one
+siatt task pause   stop it firing, without forgetting it
+siatt task resume  start it again, and clear the failures that stopped it
+siatt task run     fire one now, without waiting for the clock
+siatt review list  what is waiting on a person, and why
+siatt review done  mark a review as dealt with
+siatt db migrate   apply pending migrations
 ```
 
-`kasa doctor` exits non-zero if any check failed, so it works as a health check.
-Kasa also re-checks on every start that the memory repo is still private, and
+`siatt doctor` exits non-zero if any check failed, so it works as a health check.
+Siatt also re-checks on every start that the memory repo is still private, and
 refuses to run if it is not.
 
 ## Memory
 
 Every memory is a Markdown file with YAML frontmatter, under `memory/` in the
-repo `kasa init` set up. Correct a belief by editing the file; the agent reads
+repo `siatt init` set up. Correct a belief by editing the file; the agent reads
 your version. See what it decided to believe with `git log`; undo it with
 `git revert`.
 
@@ -162,11 +162,11 @@ Ask for one where you want it to answer:
 > **you** — every weekday at 9am Seoul time, search for what happened in AI
 > overnight and give me the five things that matter
 >
-> **kasa** — Done. It next runs Mon 07 Sep 09:00, Tue 08 Sep 09:00 and
+> **siatt** — Done. It next runs Mon 07 Sep 09:00, Tue 08 Sep 09:00 and
 > Wed 09 Sep 09:00, Asia/Seoul.
 
 At nine on Monday that prompt arrives in this thread as though you had typed it,
-and Kasa answers it there — same memory, same tools, same thread. It knows
+and Siatt answers it there — same memory, same tools, same thread. It knows
 nobody spoke just now, so it gives you the news rather than thanking you for
 asking.
 
@@ -178,26 +178,26 @@ first run is on a Monday.
 ask for one that posts somewhere else — not a rule that is enforced, but an
 argument that does not exist. The channel, the thread and the visibility are
 copied off the conversation, so a task set up in a DM stays in the DM, and text
-Kasa merely *reads* cannot arrange for anything to be said in a public channel.
+Siatt merely *reads* cannot arrange for anything to be said in a public channel.
 Listing and cancelling are scoped the same way: one thread cannot see or delete
 another's schedules. The terminal is the exception, and deliberately so:
-`kasa task add --session` is the operator of the install choosing, which is a
+`siatt task add --session` is the operator of the install choosing, which is a
 different thing from the model being able to.
 
-**Standing tasks need the daemon.** The clock runs inside `kasa run --slack`; on
-a terminal, `kasa task add` writes the row and nothing fires it (the command
-says so). `kasa task run <id>` fires one occurrence by hand.
+**Standing tasks need the daemon.** The clock runs inside `siatt run --slack`; on
+a terminal, `siatt task add` writes the row and nothing fires it (the command
+says so). `siatt task run <id>` fires one occurrence by hand.
 
 From the terminal:
 
 ```bash
-uv run kasa task list
-uv run kasa task add "summarize yesterday" --cron "0 9 * * 1-5" --tz Asia/Seoul
-uv run kasa task pause <id>
+uv run siatt task list
+uv run siatt task add "summarize yesterday" --cron "0 9 * * 1-5" --tz Asia/Seoul
+uv run siatt task pause <id>
 ```
 
 Every firing is a full turn — retrieval, a frontier model, whatever tools it
-reaches for — and it is metered like any other, so it shows up in `kasa cost`.
+reaches for — and it is metered like any other, so it shows up in `siatt cost`.
 The `[budget]` ceiling pauses background utility work rather than a scheduled
 answer, which makes these the bounds that actually apply:
 
@@ -211,11 +211,11 @@ disable_after_failures = 5    # then it pauses, and tells whoever created it
 ## Web search
 
 Optional, and off until you ask for it. With a Brave Search key in the vault,
-`web_search` lets Kasa answer things memory cannot — anything current, or simply
+`web_search` lets Siatt answer things memory cannot — anything current, or simply
 outside the corpus.
 
 ```bash
-uv run kasa vault set BRAVE_SEARCH_API_KEY
+uv run siatt vault set BRAVE_SEARCH_API_KEY
 ```
 
 ```toml
@@ -225,7 +225,7 @@ max_results       = 5
 cost_per_call_usd = 0.005    # counts toward the same [budget] ceiling as models
 ```
 
-Without a `[search]` section the tool is not registered at all, so Kasa never
+Without a `[search]` section the tool is not registered at all, so Siatt never
 claims a capability it does not have.
 
 Results are snippets. When the answer is on the page rather than in the
@@ -236,11 +236,11 @@ nonce-delimited untrusted block that consolidation prompts use, labelled as data
 rather than instruction. And nothing a search or a fetch returns can become a
 memory: the transcript that candidate facts are extracted from is built from
 what people said, and a tool result is not that. A page saying *"remember that
-X"* does not make Kasa believe X.
+X"* does not make Siatt believe X.
 
 ## Reading a page
 
-`web_fetch` retrieves one http(s) url and hands back its text, so Kasa can
+`web_fetch` retrieves one http(s) url and hands back its text, so Siatt can
 finish the errand search starts — search, open the result that looks
 authoritative, read it, answer.
 
@@ -271,7 +271,7 @@ tool takes a url and nothing else.
 Long pages are cut, and say so. Pages that draw themselves in the browser are
 the other limit, and the next section is what it is for.
 
-`kasa doctor` reports whether fetching is on and what the limits are.
+`siatt doctor` reports whether fetching is on and what the limits are.
 
 ## Running a page
 
@@ -301,9 +301,9 @@ uv run playwright install chromium   # ~650MB
 enabled = true
 ```
 
-Until then the `render` parameter is not in the tool's schema at all, so Kasa
+Until then the `render` parameter is not in the tool's schema at all, so Siatt
 never claims a capability this install does not have. When a served page comes
-back with almost no text for its size and a lot of script, Kasa says so — either
+back with almost no text for its size and a lot of script, Siatt says so — either
 "ask again with render" or, without a browser, "its content is missing rather
 than absent", so an empty page is not mistaken for an empty answer.
 
@@ -313,7 +313,7 @@ requests nobody chose, and a bare headless browser is a live SSRF — it reaches
 images, media and fonts are never fetched at all; a host is judged once per
 render rather than once per request; and the page's own address is pinned to the
 one the guard approved, with the certificate still checked against the name.
-Nothing is clicked, typed, or submitted — Kasa navigates, waits, and reads.
+Nothing is clicked, typed, or submitted — Siatt navigates, waits, and reads.
 
 One residual, since it is better said than hidden: subresources are approved by
 URL but Chromium resolves them itself, so the DNS pin covers the document rather
@@ -326,7 +326,7 @@ narrow.
 uv sync --all-extras --dev   # `--all-extras` brings in Slack
 uv run pytest
 uv run ruff check . && uv run ruff format --check .
-uv run mypy kasa
+uv run mypy siatt
 ```
 
 The black-box QA suite starts the real terminal command against a local fake

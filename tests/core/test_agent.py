@@ -7,12 +7,12 @@ from typing import Any
 
 import pytest
 
-from kasa.core.agent import Agent, AgentConfig, AgentResult
-from kasa.core.context import STATUS_HEADER, ContextPacker
-from kasa.core.tools import Tool, ToolContext, ToolRegistry
-from kasa.llm.registry import ModelRole, ProviderRegistry
-from kasa.llm.tokens import Tokenizer
-from kasa.llm.types import (
+from siatt.core.agent import Agent, AgentConfig, AgentResult
+from siatt.core.context import STATUS_HEADER, ContextPacker
+from siatt.core.tools import Tool, ToolContext, ToolRegistry
+from siatt.llm.registry import ModelRole, ProviderRegistry
+from siatt.llm.tokens import Tokenizer
+from siatt.llm.types import (
     ChatRequest,
     ChatResponse,
     Delta,
@@ -26,12 +26,12 @@ from kasa.llm.types import (
     ToolUseStop,
     Usage,
 )
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.document import MemoryDoc
-from kasa.memory.index import MemoryIndex
-from kasa.memory.retrieve import Retriever
-from kasa.redact import Redactor
-from kasa.store import Store
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.document import MemoryDoc
+from siatt.memory.index import MemoryIndex
+from siatt.memory.retrieve import Retriever
+from siatt.redact import Redactor
+from siatt.store import Store
 
 SCHEMA: dict[str, Any] = {"type": "object", "properties": {"city": {"type": "string"}}}
 
@@ -277,7 +277,7 @@ async def test_the_model_is_told_how_much_tool_budget_is_left(
     assert "4 tool rounds are left" in said[0]
     assert "3 tool rounds are left" in said[1]
     assert "2 tool rounds are left" in said[2]
-    # Kasa's own voice, not something recalled from memory.
+    # Siatt's own voice, not something recalled from memory.
     assert all(line.startswith(STATUS_HEADER) for line in said)
 
 
@@ -331,7 +331,7 @@ async def test_a_turn_that_runs_out_of_clock_answers_with_what_it_found(
         config=AgentConfig(max_tool_iterations=40, max_turn_seconds=5.0),
     )
     ticks = iter([0.0, 0.0, 100.0, 100.0, 100.0, 100.0])
-    monkeypatch.setattr("kasa.core.agent.monotonic", lambda: next(ticks, 100.0))
+    monkeypatch.setattr("siatt.core.agent.monotonic", lambda: next(ticks, 100.0))
 
     result = await agent.respond("s1", "weather in five cities?")
 
@@ -354,7 +354,7 @@ async def test_the_clock_stops_a_turn_between_rounds_not_mid_dispatch(
         [calls("weather", "weather"), says("both cities done")],
         config=AgentConfig(max_turn_seconds=5.0),
     )
-    monkeypatch.setattr("kasa.core.agent.monotonic", lambda: 0.0)
+    monkeypatch.setattr("siatt.core.agent.monotonic", lambda: 0.0)
 
     result = await agent.respond("s1", "two cities?")
 
@@ -645,7 +645,7 @@ def test_an_empty_reply_that_ended_normally_is_still_worth_naming() -> None:
 async def test_a_credential_in_memory_does_not_reach_the_provider(
     tmp_path: Path, store: Store, tokenizer: Tokenizer
 ) -> None:
-    """End to end, the way `kasa run` wires it: corpus -> retriever -> prompt.
+    """End to end, the way `siatt run` wires it: corpus -> retriever -> prompt.
 
     The pre-injected path is the one every turn takes, and it was the one
     nothing scrubbed. Asserting on the request the provider actually received,

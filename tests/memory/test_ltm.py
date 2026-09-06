@@ -12,16 +12,16 @@ from pathlib import Path
 
 import pytest
 
-from kasa.config import Config
-from kasa.github import PullRequestInfo
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.document import MemoryDoc
-from kasa.memory.gitcmd import GitRepo, run_git
-from kasa.memory.layout import MANIFEST_PATH
-from kasa.memory.lease import Lease, LeaseError, stale_lease
-from kasa.memory.ltm import CommitMeta, MemoryStore, MemoryStoreError, Remove, Write
-from kasa.memory.manifest import Manifest
-from kasa.store import Store
+from siatt.config import Config
+from siatt.github import PullRequestInfo
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.document import MemoryDoc
+from siatt.memory.gitcmd import GitRepo, run_git
+from siatt.memory.layout import MANIFEST_PATH
+from siatt.memory.lease import Lease, LeaseError, stale_lease
+from siatt.memory.ltm import CommitMeta, MemoryStore, MemoryStoreError, Remove, Write
+from siatt.memory.manifest import Manifest
+from siatt.store import Store
 
 META = CommitMeta(summary="promote 1 observation", job="promote", job_id="job_01", memory_ids=["m"])
 
@@ -59,7 +59,7 @@ def config_for(clone: Path, tmp_path: Path, *, supervised: list[str] | None = No
                 "branch": "main",
                 "supervised": supervised or [],
             },
-            "store": {"path": str(tmp_path / "kasa.db")},
+            "store": {"path": str(tmp_path / "siatt.db")},
         }
     )
 
@@ -94,9 +94,9 @@ async def test_the_commit_message_carries_machine_readable_trailers(
 
     message = memory._repo.run("log", "-1", "--format=%B")
     assert message.startswith("memory: promote 1 observation")
-    assert "Kasa-Job: promote" in message
-    assert "Kasa-Job-Id: job_01" in message
-    assert "Kasa-Memory-Ids: m" in message
+    assert "Siatt-Job: promote" in message
+    assert "Siatt-Job-Id: job_01" in message
+    assert "Siatt-Memory-Ids: m" in message
 
 
 async def test_the_manifest_is_rebuilt_from_what_landed(memory: MemoryStore) -> None:
@@ -158,7 +158,7 @@ async def test_a_supervised_destructive_job_opens_a_pr_without_changing_main(
         [Remove(path)], CommitMeta(summary="delete Jane after the retention period", job="forget")
     )
 
-    assert result.branch and result.branch.startswith("kasa/forget-")
+    assert result.branch and result.branch.startswith("siatt/forget-")
     assert result.pull_request_url == "https://github.test/mem/pull/7"
     assert result.pushed
     assert path in run_git("ls-tree", "-r", "--name-only", "main", cwd=remote).stdout
@@ -266,7 +266,7 @@ async def test_a_crash_leaves_a_lease_row_that_the_next_run_reports(
     # kernel released that when it died.
     await store.take_lease("ltm", holder="somehost:999", job="promote", ttl_seconds=900)
 
-    with caplog.at_level("WARNING", logger="kasa.memory.ltm"):
+    with caplog.at_level("WARNING", logger="siatt.memory.ltm"):
         recovered = await MemoryStore.open(config_for(clone, tmp_path), store)
 
     assert "stopped mid-write" in caplog.text
@@ -291,7 +291,7 @@ async def test_recovery_is_a_no_op_on_a_clean_tree(memory: MemoryStore) -> None:
     assert memory.recover() is False
 
 
-async def test_the_stash_does_not_claim_to_be_kasas_own_debris(
+async def test_the_stash_does_not_claim_to_be_siatts_own_debris(
     memory: MemoryStore, clone: Path
 ) -> None:
     """#78. It said "recovered from an interrupted write", which is one of the
@@ -378,7 +378,7 @@ async def test_an_unreachable_remote_still_commits_locally(
 ) -> None:
     memory._repo.set_remote("https://example.invalid/nope.git")
 
-    with caplog.at_level("WARNING", logger="kasa.memory.ltm"):
+    with caplog.at_level("WARNING", logger="siatt.memory.ltm"):
         result = await memory.apply([Write(*a_memory())], META)
 
     assert result.sha, "the commit is local; the push is what failed"
@@ -389,7 +389,7 @@ async def test_an_unreachable_remote_still_commits_locally(
 
 
 async def test_opening_a_missing_clone_says_to_run_init(tmp_path: Path, store: Store) -> None:
-    with pytest.raises(MemoryStoreError, match="kasa init"):
+    with pytest.raises(MemoryStoreError, match="siatt init"):
         await MemoryStore.open(config_for(tmp_path / "nothing", tmp_path), store)
 
 
@@ -408,9 +408,9 @@ async def test_reading_a_missing_memory_is_an_error(memory: MemoryStore) -> None
 
 def test_commit_meta_omits_absent_trailers() -> None:
     message = CommitMeta(summary="s", job="promote").message()
-    assert "Kasa-Job: promote" in message
-    assert "Kasa-Job-Id" not in message
-    assert "Kasa-Memory-Ids" not in message
+    assert "Siatt-Job: promote" in message
+    assert "Siatt-Job-Id" not in message
+    assert "Siatt-Memory-Ids" not in message
 
 
 def test_no_git_command_is_ever_forced() -> None:
@@ -419,7 +419,7 @@ def test_no_git_command_is_ever_forced() -> None:
     Matches the quoted string, not the prose: these modules discuss force-pushing
     at length in order to explain why they never do it.
     """
-    from kasa.memory import gitcmd, ltm
+    from siatt.memory import gitcmd, ltm
 
     for module in (gitcmd, ltm):
         source = Path(module.__file__ or "").read_text()  # type: ignore[arg-type]
@@ -436,7 +436,7 @@ async def test_a_manifest_problem_does_not_block_the_write(
     broken.write_text("no frontmatter here\n")
     memory._repo.commit("add a broken file", paths=["memory/facts/broken.md"])
 
-    with caplog.at_level("WARNING", logger="kasa.memory.ltm"):
+    with caplog.at_level("WARNING", logger="siatt.memory.ltm"):
         result = await memory.apply([Write(*a_memory())], META)
 
     assert result.sha

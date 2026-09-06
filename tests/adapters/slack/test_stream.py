@@ -12,14 +12,14 @@ import time
 
 import pytest
 
-from kasa.adapters.slack.stream import (
+from siatt.adapters.slack.stream import (
     FINAL_ATTEMPTS,
     MAX_REFUSALS,
     THINKING,
     LiveMessage,
     SlackRateLimited,
 )
-from kasa.llm.types import MessageStop, TextDelta, ToolUseStart, Usage
+from siatt.llm.types import MessageStop, TextDelta, ToolUseStart, Usage
 
 CHANNEL = "C0DEPLOY"
 THREAD = "1700000000.000100"

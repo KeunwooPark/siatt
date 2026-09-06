@@ -15,15 +15,15 @@ from typing import Any
 
 import pytest
 
-from kasa.config import Config, TaskSettings
-from kasa.core.events import InboundEvent
-from kasa.core.schedule_tools import schedule_tools
-from kasa.core.tools import Tool, ToolContext, ToolRegistry
-from kasa.llm.types import ToolUseBlock
-from kasa.runner.jobs import default_specs
-from kasa.runner.scheduler import Job, Scheduler
-from kasa.runner.tasks import TASK_KIND, Tasks
-from kasa.store import Store
+from siatt.config import Config, TaskSettings
+from siatt.core.events import InboundEvent
+from siatt.core.schedule_tools import schedule_tools
+from siatt.core.tools import Tool, ToolContext, ToolRegistry
+from siatt.llm.types import ToolUseBlock
+from siatt.runner.jobs import default_specs
+from siatt.runner.scheduler import Job, Scheduler
+from siatt.runner.tasks import TASK_KIND, Tasks
+from siatt.store import Store
 
 #: The thread the person is speaking in. Everything a task inherits comes off
 #: this and nothing else.
@@ -87,7 +87,7 @@ async def test_the_task_it_creates_belongs_to_the_conversation_that_asked(store:
 
 
 async def test_there_is_no_argument_for_where_a_task_posts(store: Store) -> None:
-    """The guarantee is structural rather than checked: text Kasa read cannot
+    """The guarantee is structural rather than checked: text Siatt read cannot
     ask for a task in another channel because the schema has nowhere to say
     it, and a call that tries is rejected before any handler runs."""
     create = tools_for(store)["schedule_create"]
@@ -160,7 +160,7 @@ async def test_no_timezone_means_utc_rather_than_a_guess(store: Store) -> None:
 @pytest.mark.parametrize("name", ["schedule_create", "schedule_list", "schedule_cancel"])
 async def test_a_surface_with_no_identity_cannot_own_a_schedule(store: Store, name: str) -> None:
     """A task nothing can cap, cancel or notify. The terminal is the surface
-    this happens on, and it has `kasa task add`."""
+    this happens on, and it has `siatt task add`."""
     anonymous = ToolContext(session_id="cli:1", scope="workspace")
 
     result = await call(store, name, {**ASK, "id": "01X"}, context=anonymous)

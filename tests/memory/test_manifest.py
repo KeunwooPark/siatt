@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.document import MemoryDoc, MemoryError_, new_memory_id
-from kasa.memory.layout import MANIFEST_PATH
-from kasa.memory.manifest import Manifest, checksum_of
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.document import MemoryDoc, MemoryError_, new_memory_id
+from siatt.memory.layout import MANIFEST_PATH
+from siatt.memory.manifest import Manifest, checksum_of
 
 
 def write(root: Path, relative: str, doc: MemoryDoc) -> Path:
@@ -50,13 +50,13 @@ def test_rebuild_indexes_every_memory(repo: Path, jane: MemoryDoc, deploy: Memor
 
 
 def test_rebuild_ignores_machinery(repo: Path, jane: MemoryDoc) -> None:
-    """README.md and everything under .kasa/ are generated, not memories."""
+    """README.md and everything under .siatt/ are generated, not memories."""
     write(repo, "memory/people/jane.md", jane)
     manifest, problems = Manifest.rebuild(repo)
 
     assert not problems
     assert len(manifest) == 1
-    assert all(".kasa" not in e.path for e in manifest.memories.values())
+    assert all(".siatt" not in e.path for e in manifest.memories.values())
 
 
 def test_a_malformed_file_is_reported_rather_than_crashing(repo: Path, jane: MemoryDoc) -> None:

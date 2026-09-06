@@ -12,17 +12,17 @@ from typing import Any
 
 import pytest
 
-from kasa.config import Config, LTMSettings, ProviderConfig, SlackSettings
-from kasa.memory.bootstrap import bootstrap
-from kasa.memory.document import MemoryDoc
-from kasa.memory.gitcmd import GitRepo
-from kasa.memory.index import MemoryIndex
-from kasa.memory.lease import INDEX_LEASE_NAME, Lease
-from kasa.memory.manifest import Manifest
-from kasa.runner.cron import HOURLY, NIGHTLY, WEEKLY
-from kasa.runner.jobs import EVERY_FIVE_MINUTES, default_specs
-from kasa.runner.scheduler import Job, JobSpec, Scheduler
-from kasa.store import Store
+from siatt.config import Config, LTMSettings, ProviderConfig, SlackSettings
+from siatt.memory.bootstrap import bootstrap
+from siatt.memory.document import MemoryDoc
+from siatt.memory.gitcmd import GitRepo
+from siatt.memory.index import MemoryIndex
+from siatt.memory.lease import INDEX_LEASE_NAME, Lease
+from siatt.memory.manifest import Manifest
+from siatt.runner.cron import HOURLY, NIGHTLY, WEEKLY
+from siatt.runner.jobs import EVERY_FIVE_MINUTES, default_specs
+from siatt.runner.scheduler import Job, JobSpec, Scheduler
+from siatt.store import Store
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ def test_episode_close_registers_wherever_there_is_a_model(store: Store) -> None
 
 
 def test_a_build_with_no_model_registers_no_consolidation(clone: Path, store: Store) -> None:
-    """`kasa job list` has to work on a machine with no API key exported, and a
+    """`siatt job list` has to work on a machine with no API key exported, and a
     job that fails on every tick is worse than one that is not there."""
     assert "episode_close" not in [spec.kind for spec in default_specs(config_for(clone), store)]
 
@@ -132,7 +132,7 @@ async def test_a_reindex_that_cannot_lock_at_all_is_not_reported_as_done(
     On a filesystem where `flock` fails rather than blocks — NFS with no lock
     daemon, some FUSE mounts — nothing was holding it and nothing else was
     going to do the work. The row said `done`, the index stayed empty, and the
-    explanation was logged at INFO, which `kasa job run` does not print
+    explanation was logged at INFO, which `siatt job run` does not print
     without `-v`: broken, silent, and reporting success.
     """
     real_flock = fcntl.flock
@@ -156,13 +156,13 @@ async def test_the_skip_for_a_lease_someone_else_holds_is_said_out_loud(
     clone: Path, store: Store, caplog: Any
 ) -> None:
     """Doing nothing is the right call there, but it is still a pass that did
-    not run, and INFO is below what `kasa job run` prints without `-v`."""
+    not run, and INFO is below what `siatt job run` prints without `-v`."""
     cfg = config_for(clone)
     index = MemoryIndex(store, clone)
     held = await Lease(store, index._lock_path(), name=INDEX_LEASE_NAME).acquire()
     try:
         job = Job(id="j1", kind="reindex", payload={}, attempts=1)
-        with caplog.at_level("WARNING", logger="kasa.runner.jobs"):
+        with caplog.at_level("WARNING", logger="siatt.runner.jobs"):
             await only_spec(cfg, store).handler(job)
     finally:
         await held.release()
@@ -281,7 +281,7 @@ def test_forget_is_supervised_by_default() -> None:
 def with_slack(cfg: Config) -> Config:
     return cfg.model_copy(
         update={
-            "slack": SlackSettings(app_token_env="KASA_SLACK_APP", bot_token_env="KASA_SLACK_BOT")
+            "slack": SlackSettings(app_token_env="SIATT_SLACK_APP", bot_token_env="SIATT_SLACK_BOT")
         }
     )
 

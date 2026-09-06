@@ -17,12 +17,12 @@ from typing import Any
 
 import pytest
 
-from kasa.config import Config, TaskSettings
-from kasa.core.events import InboundEvent
-from kasa.runner.cron import Cron
-from kasa.runner.jobs import default_specs
-from kasa.runner.scheduler import Job, JobSpec, Scheduler
-from kasa.runner.tasks import (
+from siatt.config import Config, TaskSettings
+from siatt.core.events import InboundEvent
+from siatt.runner.cron import Cron
+from siatt.runner.jobs import default_specs
+from siatt.runner.scheduler import Job, JobSpec, Scheduler
+from siatt.runner.tasks import (
     ACTIVE,
     DONE,
     PAUSED,
@@ -34,7 +34,7 @@ from kasa.runner.tasks import (
     render_fires,
     task_handler,
 )
-from kasa.store import Store
+from siatt.store import Store
 
 NOW = datetime(2026, 9, 5, 10, 30, tzinfo=UTC)
 

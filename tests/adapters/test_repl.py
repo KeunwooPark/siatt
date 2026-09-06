@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from kasa import __version__
-from kasa.adapters.cli.repl import banner
+from siatt import __version__
+from siatt.adapters.cli.repl import banner
 
 
 def test_the_banner_names_the_running_version() -> None:

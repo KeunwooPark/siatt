@@ -5,7 +5,7 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
-from tests.e2e.conftest import KasaRig
+from tests.e2e.conftest import SiattRig
 
 MEMORY_ID = "mem_01K8XQ4W2N7B6VJ3ZC9F0RTKME"
 MEMORY = f"""---
@@ -50,7 +50,7 @@ def local_remote(tmp_path: Path) -> Path:
     return remote
 
 
-def bootstrap_with_init(rig: KasaRig, tmp_path: Path) -> Path:
+def bootstrap_with_init(rig: SiattRig, tmp_path: Path) -> Path:
     remote = local_remote(tmp_path)
     clone = tmp_path / "memory-clone"
     answers = (
@@ -70,35 +70,35 @@ def bootstrap_with_init(rig: KasaRig, tmp_path: Path) -> Path:
     initialized = rig.command("init", input=answers)
     assert initialized.returncode == 0, (initialized.stdout, initialized.stderr)
     assert "Bootstrapped" in initialized.stdout
-    assert clone.joinpath("memory", ".kasa", "schema.md").is_file()
+    assert clone.joinpath("memory", ".siatt", "schema.md").is_file()
     git("config", "user.name", "E2E QA", cwd=clone)
     git("config", "user.email", "e2e@example.invalid", cwd=clone)
     return clone
 
 
 def test_memory_is_indexed_retrieved_and_recorded_through_cli_processes(
-    kasa_rig: KasaRig, tmp_path: Path
+    siatt_rig: SiattRig, tmp_path: Path
 ) -> None:
-    clone = bootstrap_with_init(kasa_rig, tmp_path)
+    clone = bootstrap_with_init(siatt_rig, tmp_path)
     memory_path = clone / "memory" / "facts" / "deployment-owner.md"
     memory_path.write_text(MEMORY)
     git("add", str(memory_path.relative_to(clone)), cwd=clone)
     git("commit", "-m", "memory: seed deployment owner", cwd=clone)
 
-    indexed = kasa_rig.command("reindex")
+    indexed = siatt_rig.command("reindex")
     assert indexed.returncode == 0, indexed.stderr
     assert "1 file(s) indexed" in indexed.stdout
     assert "chunk(s)" in indexed.stdout
     assert "manifest rebuilt: 1 memories (1 added)" in indexed.stdout
-    manifest = json.loads((clone / "memory" / ".kasa" / "manifest.json").read_text())
+    manifest = json.loads((clone / "memory" / ".siatt" / "manifest.json").read_text())
     assert manifest["memories"][MEMORY_ID]["path"] == "memory/facts/deployment-owner.md"
 
-    answer = kasa_rig.run("Who owns the deployment launch checklist?\n/quit\n")
+    answer = siatt_rig.run("Who owns the deployment launch checklist?\n/quit\n")
     assert answer.returncode == 0, answer.stderr
     assert "E2E reply: Who owns the deployment launch checklist?" in answer.stdout
-    assert any("Aster Quinn" in json.dumps(request) for request in kasa_rig.server.requests)
+    assert any("Aster Quinn" in json.dumps(request) for request in siatt_rig.server.requests)
 
-    connection = sqlite3.connect(kasa_rig.database)
+    connection = sqlite3.connect(siatt_rig.database)
     try:
         hits = connection.execute("SELECT memory_id FROM memory_hits ORDER BY id").fetchall()
         roles = connection.execute("SELECT role FROM messages ORDER BY seq").fetchall()
@@ -110,16 +110,16 @@ def test_memory_is_indexed_retrieved_and_recorded_through_cli_processes(
 
 
 def test_an_unavailable_clone_fails_without_network_access(
-    kasa_rig: KasaRig, tmp_path: Path
+    siatt_rig: SiattRig, tmp_path: Path
 ) -> None:
-    clone = bootstrap_with_init(kasa_rig, tmp_path)
+    clone = bootstrap_with_init(siatt_rig, tmp_path)
     missing = tmp_path / "clone-that-is-not-there"
-    broken = kasa_rig.config.with_name("missing-clone.toml")
-    broken.write_text(kasa_rig.config.read_text().replace(str(clone), str(missing)))
+    broken = siatt_rig.config.with_name("missing-clone.toml")
+    broken.write_text(siatt_rig.config.read_text().replace(str(clone), str(missing)))
 
-    result = kasa_rig.command("reindex", config=broken)
+    result = siatt_rig.command("reindex", config=broken)
 
     assert result.returncode == 1
     assert result.stdout == ""
     assert str(missing) in result.stderr
-    assert "kasa init" in result.stderr
+    assert "siatt init" in result.stderr
