@@ -1644,6 +1644,40 @@ class Store:
             row = await cur.fetchone()
         return dict(row) if row else None
 
+    async def author_names(self, author_ids: Sequence[str]) -> dict[str, str]:
+        """What to call the people behind a transcript's author ids.
+
+        Slack is the only surface that hands us an id where a name belongs, so
+        the directory is the only place to ask. An id nobody has been looked up
+        for is simply absent from the result: the caller keeps the id, which is
+        what `_render_mentions` does with an unknown mention and for the same
+        reason — a name nobody can act on is worse than an id.
+
+        Not filtered by team. A uid is the key the transcript carries and it is
+        all it carries, and two workspaces holding the same Slack id is not a
+        thing that happens.
+        """
+        ids = list(dict.fromkeys(author_ids))
+        if not ids:
+            return {}
+        async with (
+            self._serial,
+            self._conn.execute(
+                "SELECT user_id, display_name, real_name FROM slack_users"
+                f" WHERE user_id IN ({_marks(ids)}) ORDER BY team_id",
+                tuple(ids),
+            ) as cur,
+        ):
+            rows = await cur.fetchall()
+        names = {}
+        for row in rows:
+            # The same precedence as `SlackUser.name`: display name first,
+            # because it is what the workspace shows and what people type.
+            name = str(row["display_name"] or "") or str(row["real_name"] or "")
+            if name:
+                names[str(row["user_id"])] = name
+        return names
+
     async def slack_users_awaiting_memory(self, limit: int = 100) -> list[dict[str, Any]]:
         """Everyone the identity job still owes the corpus a write for.
 
