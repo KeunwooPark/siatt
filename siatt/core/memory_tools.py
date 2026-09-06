@@ -78,7 +78,16 @@ def _search_tool(retriever: Retriever) -> Tool:
         # conversation; slicing what it had already packed to that bound meant
         # `limit` could only ever shrink a list of eight, and a request for
         # twenty was answered with eight and no indication of it (#61).
-        retrieval = await retriever.retrieve(query, scope=scope, include_pinned=False, limit=limit)
+        retrieval = await retriever.retrieve(
+            query,
+            scope=scope,
+            include_pinned=False,
+            limit=limit,
+            # The same zone the pre-injected recall used. A model that searches
+            # for "what did they do yesterday" mid-turn must not land on a
+            # different day from the one the turn opened with.
+            tz=context.tz,
+        )
         # Noted on the turn, so that feedback on the answer reaches what the
         # model went and found as well as what it was handed (#36). A search
         # mid-turn is often where the memory that actually answered the

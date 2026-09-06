@@ -19,6 +19,7 @@ from ulid import ULID
 from siatt import __version__
 from siatt.core.agent import Agent, AgentResult
 from siatt.llm.types import Delta, TextDelta
+from siatt.memory.dates import local_zone
 
 PROMPT = "\n› "  # noqa: RUF001 - a prompt glyph, not punctuation
 
@@ -88,7 +89,13 @@ class Repl:
 
         try:
             self.last_result = await self.agent.respond(
-                self.session_id, text, surface="cli", on_delta=on_delta
+                self.session_id,
+                text,
+                surface="cli",
+                on_delta=on_delta,
+                # Whoever is at the terminal means their own yesterday, and
+                # there is no profile here to ask for it (#223).
+                tz=local_zone(),
             )
         except asyncio.CancelledError:
             self.console.print("\n[yellow]interrupted[/yellow]")

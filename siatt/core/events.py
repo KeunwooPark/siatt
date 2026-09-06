@@ -59,6 +59,15 @@ class InboundEvent(BaseModel):
     #: The platform's id for whoever spoke, not a display name.
     author: str | None = None
 
+    #: The IANA zone the author is in, when the surface knows it. What makes
+    #: "yesterday" in their message mean their yesterday and not Greenwich's
+    #: (#223) — the author's, per message, because in a channel with several
+    #: people there is no one workspace answer.
+    #:
+    #: Defaulted, like `origin`, so that an event queued before this field
+    #: existed still parses after an upgrade.
+    tz: str | None = None
+
     #: Where a reply goes. Opaque to the core — Slack puts `channel` and the
     #: `thread_ts` to reply in, and only the Slack adapter reads them back.
     channel: str | None = None

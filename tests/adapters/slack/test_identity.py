@@ -210,6 +210,80 @@ async def test_the_turn_survives_a_directory_that_is_broken_outright(
 # -- reading a profile --------------------------------------------------------
 
 
+# -- #223: the zone a relative day is relative to -----------------------------
+
+
+def test_the_zone_is_read_off_the_payload() -> None:
+    """`users.info` has always returned it; `read_user` used to drop it."""
+    assert read_user(JANE, profile("jane", tz="Asia/Seoul")).tz == "Asia/Seoul"
+
+
+def test_a_payload_with_no_zone_says_so_rather_than_guessing() -> None:
+    """A bot has no zone, and neither does a deactivated account."""
+    assert read_user(JANE, profile("jane")).tz == ""
+    assert read_user(JANE, {"profile": {}, "tz": 17}).tz == ""
+
+
+async def test_the_authors_zone_reaches_the_event(store: Store) -> None:
+    """The whole point: the turn has to know which day the speaker means."""
+    lookup = Fake({JANE: profile("jane", tz="Asia/Seoul")})
+
+    hydrated = await directory(store, lookup).hydrate(event("어제 어디갔지"))
+
+    assert hydrated.tz == "Asia/Seoul"
+
+
+async def test_the_zone_is_the_authors_and_not_a_mentioned_persons(store: Store) -> None:
+    """`어제` is said by whoever is speaking. A channel holds several zones and
+    only one of them is the one the question was asked in."""
+    lookup = Fake(
+        {
+            JANE: profile("jane", tz="Asia/Seoul"),
+            RAJ: profile("raj", tz="America/New_York"),
+        }
+    )
+
+    hydrated = await directory(store, lookup).hydrate(event(f"<@{RAJ}> 어제 뭐했어", author=JANE))
+
+    assert hydrated.tz == "Asia/Seoul"
+
+
+async def test_an_event_keeps_its_zone_when_slack_offers_none(store: Store) -> None:
+    """No zone is not the empty zone: leave the event alone and let retrieval
+    fall back, rather than writing a blank over what a surface already knew."""
+    lookup = Fake({JANE: profile("jane")})
+
+    hydrated = await directory(store, lookup).hydrate(
+        event("morning").model_copy(update={"tz": "Asia/Seoul"})
+    )
+
+    assert hydrated.tz == "Asia/Seoul"
+
+
+async def test_the_zone_is_cached_with_the_rest_of_the_profile(store: Store) -> None:
+    """It rides the existing 24h cache, so it costs no extra `users.info`."""
+    lookup = Fake({JANE: profile("jane", tz="Asia/Seoul")})
+    directory_ = directory(store, lookup)
+
+    await directory_.hydrate(event("morning"))
+    again = await directory_.resolve(JANE)
+
+    assert lookup.calls == [JANE], "the second read must come from the cache"
+    assert again is not None
+    assert again.tz == "Asia/Seoul"
+
+
+async def test_a_move_is_picked_up_once_the_cache_is_stale(store: Store) -> None:
+    """People travel, and the zone follows them on the TTL already here."""
+    lookup = Fake({JANE: profile("jane", tz="Asia/Seoul")})
+    await directory(store, lookup, ttl=timedelta(0)).hydrate(event("morning"))
+
+    lookup.users[JANE] = profile("jane", tz="Europe/Lisbon")
+    hydrated = await directory(store, lookup, ttl=timedelta(0)).hydrate(event("morning"))
+
+    assert hydrated.tz == "Europe/Lisbon"
+
+
 def test_a_display_name_is_preferred_to_a_real_one() -> None:
     user = read_user(JANE, profile("jane", real="Jane Q. Doe"))
 

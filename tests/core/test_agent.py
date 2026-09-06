@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -637,6 +638,63 @@ def test_an_ordinary_answer_says_nothing_extra() -> None:
 def test_an_empty_reply_that_ended_normally_is_still_worth_naming() -> None:
     """Same symptom from the user's side: a prompt that answered nothing."""
     assert AgentResult(text="   ").note == "the model returned nothing."
+
+
+# -- #223: the asker's zone reaches retrieval ---------------------------------
+
+
+async def test_the_askers_zone_decides_which_day_is_recalled(
+    tmp_path: Path, store: Store, tokenizer: Tokenizer
+) -> None:
+    """End to end: event -> respond -> retrieval, at 08:00 in Seoul.
+
+    A whole day's memory hangs on this. In UTC it is still the 5th, so `어제`
+    means the 4th and the memory that answers is never searched for.
+    """
+    bootstrap(tmp_path)
+    doc = MemoryDoc.new(
+        type="fact",
+        title="2026-09-05 문보람과 세종시 데이트",
+        body="2026년 9월 5일, 여자친구 문보람과 세종시에서 데이트했다.",
+    )
+    (tmp_path / doc.suggested_path()).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / doc.suggested_path()).write_text(doc.render())
+    await MemoryIndex(store, tmp_path).reindex()
+
+    agent, provider = build(
+        store,
+        tokenizer,
+        [says("세종시 갔었잖아")],
+        retriever=Retriever(
+            store, tokenizer=tokenizer, now=datetime(2026, 9, 5, 23, 0, tzinfo=UTC)
+        ),
+    )
+    await agent.respond("s1", "내가 어제 어디갔는지 기억해?", tz="Asia/Seoul")
+
+    sent = provider.requests[0]
+    assert "세종시에서 데이트했다" in f"{sent.system}\n{sent.context}"
+
+
+async def test_a_tool_is_told_the_zone_the_turn_is_in(store: Store, tokenizer: Tokenizer) -> None:
+    """`memory_search` resolves relative days too, and a search mid-turn must
+    not land on a different day from the one the turn opened with."""
+    seen: list[ToolContext] = []
+
+    async def capture(args: dict[str, Any], context: ToolContext) -> str:
+        seen.append(context)
+        return "noted"
+
+    agent, _ = build(
+        store,
+        tokenizer,
+        [calls("capture"), says("done")],
+        tools=[Tool(name="capture", description="d", input_schema=SCHEMA, handler=capture)],
+    )
+
+    await agent.respond("s1", "내가 어제 어디갔지", tz="Asia/Seoul")
+
+    (context,) = seen
+    assert context.tz == "Asia/Seoul"
 
 
 # -- retrieval reaches the prompt scrubbed (#67) ------------------------------

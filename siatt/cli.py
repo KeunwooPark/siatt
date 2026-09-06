@@ -33,6 +33,7 @@ from siatt.errors import ConfigError, SiattError
 from siatt.fetch import BrowserRenderer, WebFetcher, web_fetch_tool
 from siatt.init import run_init
 from siatt.llm.tokens import default_tokenizer
+from siatt.memory.dates import local_zone
 from siatt.memory.document import Problem
 from siatt.memory.explain import render_trace
 from siatt.memory.index import MemoryIndex
@@ -346,7 +347,16 @@ def why(
                 embedding_model=embedding.model if embedding else None,
             )
             try:
-                retrieval = await retriever.retrieve(question, scope=scope, explain=True)
+                retrieval = await retriever.retrieve(
+                    question,
+                    scope=scope,
+                    explain=True,
+                    # The terminal has no Slack profile behind it, so the
+                    # machine's own zone stands in. Without it a trace run at
+                    # 08:00 in Seoul would explain a search for the wrong day
+                    # and give no sign of it (#223).
+                    tz=local_zone(),
+                )
             finally:
                 if registry is not None:
                     await registry.aclose()

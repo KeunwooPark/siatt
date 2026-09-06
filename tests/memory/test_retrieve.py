@@ -9,7 +9,7 @@ catch a scoring change that quietly makes recall worse.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 
 import pytest
@@ -17,7 +17,7 @@ import pytest
 from siatt.core.context import PINNED_HEADER, ContextPacker
 from siatt.llm.tokens import HeuristicTokenizer, Tokenizer
 from siatt.memory.bootstrap import bootstrap
-from siatt.memory.dates import date_phrases
+from siatt.memory.dates import date_phrases, local_zone, today_in
 from siatt.memory.document import MemoryDoc
 from siatt.memory.explain import render_trace
 from siatt.memory.index import MemoryIndex
@@ -549,6 +549,72 @@ async def test_the_trace_says_which_day_it_searched_for(
     assert retrieval.trace is not None
     assert "2026-09-02" in retrieval.trace.dates
     assert "2026-09-02" in render_trace(retrieval)
+
+
+# -- #223: whose day "yesterday" is ------------------------------------------
+
+#: 08:00 in Seoul on the 6th, and still the 5th in UTC. The nine hours #221
+#: got wrong every single day.
+MORNING = datetime(2026, 9, 5, 23, 0, tzinfo=UTC)
+
+
+def test_the_day_is_the_one_it_is_where_the_question_was_asked() -> None:
+    assert today_in("Asia/Seoul", now=MORNING) == date(2026, 9, 6)
+    assert today_in(None, now=MORNING) == date(2026, 9, 5)
+
+
+def test_an_unusable_zone_falls_back_rather_than_raising() -> None:
+    """This runs on the turn path. A junk zone is a slightly wrong answer, not
+    a failed turn."""
+    for junk in ("Mars/Olympus", "KST", "", "  "):
+        assert today_in(junk, now=MORNING) == date(2026, 9, 5)
+
+
+def test_the_local_zone_is_handed_over_as_an_object() -> None:
+    """`datetime.now().astimezone().tzname()` says "KST", and ZoneInfo has no
+    such key — so the terminal's zone cannot survive the trip as a string."""
+    zone = local_zone()
+
+    assert zone is None or isinstance(zone, tzinfo)
+    assert today_in(zone, now=MORNING) == MORNING.astimezone(zone).date()
+
+
+async def test_a_morning_question_finds_the_day_the_asker_meant(
+    tmp_path: Path, store: Store, tokenizer: Tokenizer
+) -> None:
+    """#223 end to end: the same question, the same corpus, nine hours earlier.
+
+    In UTC this searches the 4th and finds nothing. The memory is the 5th,
+    which is what `어제` means to somebody in Seoul on the morning of the 6th.
+    """
+    bootstrap(tmp_path)
+    wanted = write(
+        tmp_path,
+        MemoryDoc.new(
+            type="fact",
+            title="2026-09-05 문보람과 세종시 데이트",
+            body="2026년 9월 5일, 여자친구 문보람과 세종시에서 데이트했다.",
+        ),
+    )
+    await MemoryIndex(store, tmp_path).reindex()
+    search = Retriever(store, tokenizer=tokenizer, now=MORNING)
+
+    asked_in_seoul = await search.retrieve("내가 어제 어디갔는지 기억해?", tz="Asia/Seoul")
+    asked_in_utc = await search.retrieve("내가 어제 어디갔는지 기억해?")
+
+    assert asked_in_seoul.memory_ids[:1] == [wanted.id]
+    assert wanted.id not in asked_in_utc.memory_ids
+
+
+async def test_the_trace_shows_the_day_the_zone_chose(
+    corpus: dict[str, str], store: Store, tokenizer: Tokenizer
+) -> None:
+    search = Retriever(store, tokenizer=tokenizer, now=MORNING)
+
+    retrieval = await search.retrieve("what did I do yesterday?", tz="Asia/Seoul")
+
+    assert retrieval.trace is not None
+    assert "2026-09-05" in retrieval.trace.dates
 
 
 def test_a_two_character_cjk_noun_survives_the_recent_turn_floor() -> None:

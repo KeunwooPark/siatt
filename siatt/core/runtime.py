@@ -206,6 +206,11 @@ class Runtime:
                 # surface put them on the event; nothing in between edits them.
                 channel=turn.event.channel,
                 reply_to=turn.event.reply_to,
+                # The author's zone, which decides what "yesterday" in their
+                # message means (#223). The event's and not the session's:
+                # unlike scope, this is a property of whoever spoke just now,
+                # and a thread can carry people in different zones.
+                tz=turn.event.tz,
             )
         except BaseException:
             # Including cancellation, which is what a shutdown mid-turn is. A

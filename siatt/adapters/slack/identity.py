@@ -68,6 +68,11 @@ class SlackUser:
     is_bot: bool = False
     deleted: bool = False
 
+    #: The IANA zone Slack has them in, e.g. `Asia/Seoul`. Empty when Slack did
+    #: not say — a bot user has no zone, and neither does a deactivated one.
+    #: What "yesterday" means to this person is decided from it (#223).
+    tz: str = ""
+
     @property
     def name(self) -> str:
         """What to call them, with the id as the answer of last resort.
@@ -97,6 +102,11 @@ def read_user(user_id: str, payload: Mapping[str, Any]) -> SlackUser:
         real_name=real,
         is_bot=bool(payload.get("is_bot")),
         deleted=bool(payload.get("deleted")),
+        # Top-level on the user object, not inside `profile`, and not
+        # validated here: an unrecognized zone is the caller's problem to
+        # degrade on, and this parser's contract is to assume nothing about
+        # the payload's shape.
+        tz=_text(payload.get("tz")),
     )
 
 
@@ -180,6 +190,7 @@ class Directory:
             real_name=user.real_name,
             is_bot=user.is_bot,
             deleted=user.deleted,
+            tz=user.tz,
         )
         return user
 
@@ -198,7 +209,17 @@ class Directory:
         found = await asyncio.gather(*(self.resolve(uid) for uid in sorted(wanted)))
         names = {user.user_id: user.name for user in found if user is not None}
         text = _render_mentions(event.text, names)
-        return event if text == event.text else event.model_copy(update={"text": text})
+        # The author's zone, not any mentioned person's: "yesterday" is said by
+        # whoever is speaking (#223). Only set when Slack actually knows one,
+        # so a workspace that returns nothing leaves the event as it was and
+        # retrieval falls back to UTC.
+        update: dict[str, Any] = {}
+        if text != event.text:
+            update["text"] = text
+        author = next((u for u in found if u is not None and u.user_id == event.author), None)
+        if author is not None and author.tz:
+            update["tz"] = author.tz
+        return event.model_copy(update=update) if update else event
 
     def _stale(self, row: Mapping[str, Any]) -> bool:
         fetched = _parse(str(row["fetched_at"]))
@@ -229,6 +250,7 @@ def _from_row(row: Mapping[str, Any]) -> SlackUser:
         real_name=str(row["real_name"] or ""),
         is_bot=bool(row["is_bot"]),
         deleted=bool(row["deleted"]),
+        tz=str(row["tz"] or ""),
     )
 
 
