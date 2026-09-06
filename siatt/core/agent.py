@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import tzinfo
 from time import monotonic
 
 from siatt.core.context import ContextPacker, PackedContext, PackTrace
@@ -277,6 +278,7 @@ class Agent:
         origin: str = "message",
         channel: str | None = None,
         reply_to: str | None = None,
+        tz: str | tzinfo | None = None,
     ) -> AgentResult:
         await self._store.ensure_session(session_id, surface=surface, scope=scope)
         # `external_id` is the surface's own key for this message, and it is
@@ -297,6 +299,7 @@ class Agent:
             author=author,
             channel=channel,
             reply_to=reply_to,
+            tz=tz,
         )
         # Built once, outside the loop: it is the same on every pass, and the
         # system block is the head of the cacheable prefix.
@@ -325,7 +328,7 @@ class Agent:
             # every tool call would pay for it on each pass and thrash the
             # cacheable prefix for material that has not changed.
             if iteration == 1:
-                pinned, retrieved, recalled = await self._recall(user_text, history, scope)
+                pinned, retrieved, recalled = await self._recall(user_text, history, scope, tz)
             tools = self._tools.defs()
             packed = self._packer.pack(
                 system_prompt=system_prompt,
@@ -461,7 +464,11 @@ class Agent:
         return acc.finish()
 
     async def _recall(
-        self, user_text: str, history: Sequence[Message], scope: str
+        self,
+        user_text: str,
+        history: Sequence[Message],
+        scope: str,
+        tz: str | tzinfo | None = None,
     ) -> tuple[list[str], list[str], list[str]]:
         """Pre-inject what the question is likely to need.
 
@@ -473,7 +480,7 @@ class Agent:
             return [], [], []
         try:
             recall = await self._retriever.retrieve(
-                user_text, scope=scope, recent=[m.text for m in history[-4:] if m.text]
+                user_text, scope=scope, recent=[m.text for m in history[-4:] if m.text], tz=tz
             )
         except Exception:
             log.exception("retrieval failed; answering without memory")

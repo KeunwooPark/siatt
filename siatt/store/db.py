@@ -1596,6 +1596,7 @@ class Store:
         real_name: str = "",
         is_bot: bool = False,
         deleted: bool = False,
+        tz: str = "",
     ) -> None:
         """Record what `users.info` said about somebody, now.
 
@@ -1609,13 +1610,14 @@ class Store:
             await self._conn.execute(
                 """
                 INSERT INTO slack_users (
-                    team_id, user_id, display_name, real_name, is_bot, deleted, fetched_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    team_id, user_id, display_name, real_name, is_bot, deleted, tz, fetched_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (team_id, user_id) DO UPDATE SET
                     display_name = excluded.display_name,
                     real_name    = excluded.real_name,
                     is_bot       = excluded.is_bot,
                     deleted      = excluded.deleted,
+                    tz           = excluded.tz,
                     fetched_at   = excluded.fetched_at
                 """,
                 (
@@ -1625,6 +1627,7 @@ class Store:
                     real_name,
                     int(is_bot),
                     int(deleted),
+                    tz,
                     _now(),
                 ),
             )

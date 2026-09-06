@@ -659,7 +659,10 @@ Hybrid, cheap-first, with an agentic escape hatch.
    memory would have been written with, and search for those as phrases. A
    relative word shares no token with the date it means, so without this step
    the memory that answers "what did I do yesterday?" is not ranked low, it is
-   absent (#221). Days are UTC, as they are everywhere else here.
+   absent (#221). Which day that is comes from the speaker's Slack profile,
+   which `users.info` already returns and the directory already caches: it is
+   *their* yesterday, per message, because a channel holds several zones and no
+   one of them is the workspace's (#223). Unknown or absent, it is UTC.
 2. **Candidate generation**, in parallel:
    - FTS5 / BM25 over `chunks`
    - vector kNN over `chunks_vec`

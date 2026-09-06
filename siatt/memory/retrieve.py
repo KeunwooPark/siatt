@@ -36,11 +36,11 @@ import re
 import struct
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import Any
 
 from siatt.llm.tokens import Tokenizer
-from siatt.memory.dates import date_phrases
+from siatt.memory.dates import date_phrases, today_in
 from siatt.store import Store
 
 Row = dict[str, Any]
@@ -412,6 +412,7 @@ class Retriever:
         explain: bool = False,
         include_pinned: bool = True,
         limit: int | None = None,
+        tz: str | tzinfo | None = None,
     ) -> Retrieval:
         """Rank memories against `question`.
 
@@ -434,6 +435,12 @@ class Retriever:
         a standing instruction is not an answer to the question, and it must
         not be evicted by one. See `_pack`.
 
+        `tz` is the IANA zone the question was asked in, and decides which day
+        a relative word in it means. It is per-call rather than per-retriever
+        because the answer belongs to whoever is speaking: one `Agent` holds
+        one `Retriever` and serves a whole workspace through it. Unset, or
+        naming a zone this build has never heard of, means UTC.
+
         Every candidate's text is scrubbed before it is ranked into anything a
         caller can read, so the trace, the snippets and `kept` all carry the
         same redacted text.
@@ -443,7 +450,7 @@ class Retriever:
         # rewriter carries in words from recent turns, and a "yesterday" said
         # three messages ago is a different day from the one being asked about
         # now.
-        phrases = date_phrases(question, (self._now or datetime.now(UTC)).date())
+        phrases = date_phrases(question, today_in(tz, now=self._now))
         match = build_match(query, phrases=phrases)
         trace = RetrievalTrace(
             question=question,

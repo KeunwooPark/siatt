@@ -24,18 +24,19 @@ bm25 discriminate" rule, and it departs because these terms are not the
 person's words — they are inferred, and inferred terms should not be able to
 outvote the ones actually typed.
 
-**Days are UTC.** So is the rest of the system: `reflect` dates each journal
-entry by UTC day. It is still wrong for anybody far from Greenwich — at UTC+9
-every conversation before 09:00 local resolves `어제` to the day before the one
-meant — and fixing it needs a workspace timezone, which does not exist yet.
-Tracked separately; resolving in UTC is at least consistent with how the
-memories being searched were dated.
+**Which day is "today" is the caller's to say.** `today_in` turns a zone name
+into the date it is there now, and everything above works from that. Resolving
+in UTC was #223: at UTC+9 every conversation before 09:00 local resolved `어제`
+to the day before the one meant, so #221 worked only after lunch. The zone
+comes from the speaker's Slack profile, because `어제` means *their* yesterday
+and nobody else's.
 """
 
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 #: Relative day words and the offset each names, longest first so that "day
 #: before yesterday" is consumed before the "yesterday" inside it.
@@ -199,3 +200,42 @@ def _forms(day: date) -> tuple[str, ...]:
         f"{day.month}월 {day.day}일",
         f"{_MONTHS[day.month - 1]} {day.day}",
     )
+
+
+def today_in(zone: str | tzinfo | None, *, now: datetime | None = None) -> date:
+    """What day it is in `zone` — UTC if it does not name one.
+
+    Never raises. An IANA name reaches this from a Slack profile, on the turn
+    path, and a workspace where somebody has a zone this build's tzdata has
+    never heard of is a workspace that answers questions slightly wrong — not
+    one that fails the turn. An unknown zone is the same answer as no zone.
+
+    A `tzinfo` is accepted as well as a name because the local zone cannot
+    survive the trip through one: `datetime.now().astimezone().tzname()` says
+    "KST", and `ZoneInfo("KST")` does not exist. `local_zone` hands the object
+    over instead of a string nothing can look up.
+    """
+    moment = now or datetime.now(UTC)
+    return moment.astimezone(_zone(zone)).date()
+
+
+def _zone(zone: str | tzinfo | None) -> tzinfo:
+    if isinstance(zone, tzinfo):
+        return zone
+    if not zone:
+        return UTC
+    try:
+        return ZoneInfo(zone)
+    except (ZoneInfoNotFoundError, ValueError):
+        return UTC
+
+
+def local_zone() -> tzinfo | None:
+    """This machine's zone, for the surfaces with no profile to ask.
+
+    `siatt why` and the CLI have no Slack user behind them, and the person at
+    the terminal means their own yesterday exactly as much as somebody typing
+    in a channel does. `None` when the platform will not say, which `today_in`
+    reads as UTC.
+    """
+    return datetime.now().astimezone().tzinfo

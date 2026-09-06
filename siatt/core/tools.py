@@ -17,7 +17,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import Any
 
 import jsonschema
@@ -50,6 +50,11 @@ class ToolContext:
     #: into the thread it was asked for in and nowhere else.
     channel: str | None = None
     reply_to: str | None = None
+    #: The IANA zone whoever is speaking is in, when the surface knows it. What
+    #: a relative day in a tool's own query is relative to (#223), so a
+    #: `memory_search` for "yesterday" mid-turn lands on the same day the turn
+    #: opened with.
+    tz: str | tzinfo | None = None
     #: Memory ids the tools pulled into this turn, in the order they were
     #: reached. Mutable inside a frozen context on purpose: the scope above is
     #: a permission and must not be reassignable, while this is a notebook the

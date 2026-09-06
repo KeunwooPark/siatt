@@ -51,3 +51,19 @@ def test_a_payload_written_before_origin_existed_still_reads() -> None:
     queued = '{"source": "slack", "external_id": "Ev1", "session_id": "s", "text": "hi"}'
 
     assert InboundEvent.from_json(queued).origin == "message"
+
+
+def test_a_payload_written_before_tz_existed_still_reads() -> None:
+    """Same bargain as `origin`, for the same reason (#223): a queue that stops
+    reading its own backlog after an upgrade is a queue that drops messages."""
+    queued = '{"source": "slack", "external_id": "Ev1", "session_id": "s", "text": "hi"}'
+
+    assert InboundEvent.from_json(queued).tz is None
+
+
+def test_a_zone_survives_the_queue() -> None:
+    """It is written by ingress and read a turn later, on the other side of a
+    JSON round trip through the inbox."""
+    event = InboundEvent(source="slack", external_id="Ev2", session_id="s", tz="Asia/Seoul")
+
+    assert InboundEvent.from_json(event.to_json()).tz == "Asia/Seoul"
