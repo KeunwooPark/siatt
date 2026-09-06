@@ -9,7 +9,7 @@ catch a scoring change that quietly makes recall worse.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -17,6 +17,7 @@ import pytest
 from siatt.core.context import PINNED_HEADER, ContextPacker
 from siatt.llm.tokens import HeuristicTokenizer, Tokenizer
 from siatt.memory.bootstrap import bootstrap
+from siatt.memory.dates import date_phrases
 from siatt.memory.document import MemoryDoc
 from siatt.memory.explain import render_trace
 from siatt.memory.index import MemoryIndex
@@ -430,6 +431,124 @@ async def test_a_korean_question_retrieves_a_korean_memory(
 
     assert wanted.id in retrieval.memory_ids
     assert unrelated.id not in retrieval.memory_ids
+
+
+# -- #221: a relative day is not a term any memory contains ------------------
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("내가 어제 어디갔는지 기억해?", date(2026, 9, 2)),
+        ("what did I do yesterday?", date(2026, 9, 2)),
+        ("그저께 뭐했지?", date(2026, 9, 1)),
+        ("오늘 일정 뭐였지", date(2026, 9, 3)),
+        ("내일 뭐 하기로 했지?", date(2026, 9, 4)),
+        ("3일 전에 뭐 했더라", date(2026, 8, 31)),
+        ("이틀 전에 만난 사람", date(2026, 9, 1)),
+        ("what happened 2 days ago", date(2026, 9, 1)),
+    ],
+)
+def test_a_relative_day_resolves_to_the_day_it_names(question: str, expected: date) -> None:
+    assert expected.isoformat() in date_phrases(question, NOW.date())
+
+
+def test_the_longer_expression_wins_over_the_one_inside_it() -> None:
+    """A longer expression must not also be read as the word inside it."""
+    phrases = date_phrases("the day before yesterday", NOW.date())
+
+    assert "2026-09-01" in phrases
+    assert "2026-09-02" not in phrases
+
+
+@pytest.mark.parametrize(
+    "glued",
+    [
+        "어제부터",
+        "어제는 어땠어",
+        # Absorbed into the syllable rather than added after it: 어제 + 는. The
+        # string 어제 does not occur in this at all.
+        "어젠 뭐했지",
+        "어젯밤에 뭐 했어",
+    ],
+)
+def test_a_korean_particle_does_not_hide_the_day(glued: str) -> None:
+    """Korean glues its particles on, and sometimes into the word itself."""
+    assert "2026-09-02" in date_phrases(glued, NOW.date())
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Who owns the deploy pipeline?",
+        "사용자 이름 프로필",
+        "how many days does the retention window cover",
+        "what happened 900 days ago",
+    ],
+)
+def test_a_question_naming_no_day_expands_to_nothing(question: str) -> None:
+    """The expansion is inferred, so it must stay off unless a day was named."""
+    assert date_phrases(question, NOW.date()) == []
+
+
+def test_the_resolved_day_is_offered_in_several_spellings() -> None:
+    """A memory is written in the language of the conversation that made it."""
+    phrases = date_phrases("yesterday", NOW.date())
+
+    assert phrases == ["2026-09-02", "2026년 9월 2일", "9월 2일", "September 2"]
+
+
+def test_a_date_phrase_stays_whole_inside_its_quotes() -> None:
+    """Loose `9월` would rank every September memory against a question that
+    never said it. As a phrase it matches the day and nothing else."""
+    match = build_match("어제 뭐했지", phrases=["9월 2일"])
+
+    assert '"9월 2일"' in match
+
+
+def test_a_question_naming_no_day_builds_the_match_it_always_did() -> None:
+    assert build_match("Who owns the deploy pipeline?") == '"owns" OR "deploy" OR "pipeline"'
+
+
+async def test_yesterday_retrieves_a_memory_dated_yesterday(
+    tmp_path: Path, store: Store, tokenizer: Tokenizer
+) -> None:
+    """The end-to-end shape of #221, in the words it was reported in.
+
+    The question names no noun the memory contains — that is the whole problem.
+    Without the date it resolves to, there is nothing for the search to catch.
+    """
+    bootstrap(tmp_path)
+    wanted = write(
+        tmp_path,
+        MemoryDoc.new(
+            type="fact",
+            title="2026-09-02 문보람과 세종시 데이트",
+            body="2026년 9월 2일, 여자친구 문보람과 세종시에서 데이트했다. "
+            "영화를 보고 저녁으로 평양냉면을 먹었다.",
+        ),
+    )
+    unrelated = write(
+        tmp_path,
+        MemoryDoc.new(type="topic", title="Postgres", body="MySQL is legacy."),
+    )
+    await MemoryIndex(store, tmp_path).reindex()
+
+    retrieval = await retriever(store, tokenizer).retrieve("내가 어제 어디갔는지 기억해?")
+
+    assert retrieval.memory_ids[:1] == [wanted.id]
+    assert unrelated.id not in retrieval.memory_ids
+
+
+async def test_the_trace_says_which_day_it_searched_for(
+    corpus: dict[str, str], store: Store, tokenizer: Tokenizer
+) -> None:
+    """An inferred search term has to show, or the trace explains the wrong run."""
+    retrieval = await retriever(store, tokenizer).retrieve("what did I do yesterday?")
+
+    assert retrieval.trace is not None
+    assert "2026-09-02" in retrieval.trace.dates
+    assert "2026-09-02" in render_trace(retrieval)
 
 
 def test_a_two_character_cjk_noun_survives_the_recent_turn_floor() -> None:

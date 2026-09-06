@@ -40,6 +40,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from siatt.llm.tokens import Tokenizer
+from siatt.memory.dates import date_phrases
 from siatt.store import Store
 
 Row = dict[str, Any]
@@ -273,6 +274,8 @@ class RetrievalTrace:
     rewritten: bool
     scope: str
     match_expression: str
+    #: Absolute date phrases a relative word in the question resolved to.
+    dates: list[str] = field(default_factory=list)
     candidates: list[Candidate] = field(default_factory=list)
     denied: list[Candidate] = field(default_factory=list)
     kept: list[Candidate] = field(default_factory=list)
@@ -335,7 +338,7 @@ def is_self_contained(message: str) -> bool:
     return not (set(words) & _ANAPHORA)
 
 
-def build_match(query: str) -> str:
+def build_match(query: str, *, phrases: Sequence[str] = ()) -> str:
     """Turn free text into an FTS5 MATCH expression.
 
     Every term is quoted and OR-ed. Quoting matters for correctness, not
@@ -350,9 +353,16 @@ def build_match(query: str) -> str:
     terms above one matching one, and `_score` fuses on that ranking. What ORing
     could not survive was a stopword list that let "should" through — so the
     list is the fix, not the operator.
+
+    `phrases` are ORed in alongside the terms, but each stays whole inside its
+    quotes and so matches as a phrase rather than as its words. They carry the
+    dates `siatt.memory.dates` resolved out of relative words like "yesterday",
+    and they are quoted this way because they are inferred rather than typed:
+    the loose token `9월` would rank every memory written in September against
+    a question that never said it.
     """
     terms = [t for t in _WORD.findall(query.lower()) if t not in _STOPWORDS and _long_enough(t, 2)]
-    seen = list(dict.fromkeys(terms))
+    seen = list(dict.fromkeys([*terms, *phrases]))
     return " OR ".join(f'"{term}"' for term in seen)
 
 
@@ -429,13 +439,19 @@ class Retriever:
         same redacted text.
         """
         query, rewritten = await self._build_query(question, recent)
-        match = build_match(query)
+        # Resolved from the question rather than from the rewritten query: the
+        # rewriter carries in words from recent turns, and a "yesterday" said
+        # three messages ago is a different day from the one being asked about
+        # now.
+        phrases = date_phrases(question, (self._now or datetime.now(UTC)).date())
+        match = build_match(query, phrases=phrases)
         trace = RetrievalTrace(
             question=question,
             query=query,
             rewritten=rewritten,
             scope=scope,
             match_expression=match,
+            dates=phrases,
             budget_tokens=self._budget,
         )
 
