@@ -683,7 +683,13 @@ def task_list(config: ConfigOption = None) -> None:
         # beside it, the way `review list` prints a claim, and never anywhere a
         # channel can read.
         for task in tasks:
-            console.print(f"\n[bold]{task.id}[/bold] [dim]({task.scope} · {task.session_id})[/dim]")
+            # Where it posts, when that is not where it came from. Named rather
+            # than resolved: the row holds a name, and what it points at today
+            # is `[tasks.destinations]` in the config this command just loaded.
+            where = f" → {task.destination}" if task.destination else ""
+            console.print(
+                f"\n[bold]{task.id}[/bold] [dim]({task.scope} · {task.session_id})[/dim]{where}"
+            )
             console.print(f"  {task.prompt}")
             if task.last_error:
                 err.print(f"  [red]last error[/red]: {task.last_error}")
@@ -703,13 +709,26 @@ def task_add(
     ] = "cli",
     owner: Annotated[str, typer.Option("--owner", help="Who it belongs to.")] = "cli",
     once: Annotated[bool, typer.Option("--once", help="Fire once, then finish.")] = False,
+    destination: Annotated[
+        str | None,
+        typer.Option(
+            "--destination",
+            help="A name in [tasks.destinations]: post there, as a new thread each time.",
+        ),
+    ] = None,
     config: ConfigOption = None,
 ) -> None:
     """Create a standing task.
 
-    The destination is the session, and there is no option for it here for the
-    same reason there is no argument for it in the tools: a task answers in the
-    conversation it belongs to.
+    This is the only place a task can be pointed at a channel other than the
+    one it was created in, and the terminal is why: `--destination` takes a
+    name the operator wrote in their own config file, and nothing that arrives
+    in a conversation can reach either. The `schedule_create` tool has no such
+    argument at all (§7.1) — what it can ask for is a new thread in the channel
+    it is already in, which is not a destination.
+
+    A task with a destination fires under *that channel's* scope, not the
+    creator's: it can say what the channel may already see, and nothing else.
     """
 
     async def main() -> None:
@@ -718,12 +737,16 @@ def task_add(
             try:
                 task = await Tasks(store, cfg.tasks).create(
                     owner=owner,
-                    surface="cli",
+                    # A destination is a Slack channel, so a task with one is a
+                    # Slack task however it was created: its firing has to be
+                    # an event the Slack adapter answers.
+                    surface="slack" if destination else "cli",
                     session_id=session,
                     prompt=prompt,
                     cron=cron,
                     timezone=timezone,
                     fire_once=once,
+                    destination=destination,
                 )
             except TaskError as exc:
                 err.print(f"[red]error[/red]: {exc}")

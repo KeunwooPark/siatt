@@ -448,3 +448,39 @@ async def test_an_episode_can_only_be_closed_once(store: Store) -> None:
     assert await store.close_episode(episode_id, observations=[draft]) is not None
     assert await store.close_episode(episode_id, observations=[draft]) is None
     assert len(await store.pending_observations()) == 1, "the loser wrote nothing"
+
+
+# -- threads Siatt started ----------------------------------------------------
+
+
+async def test_a_thread_siatt_opened_is_found_again_by_channel_and_timestamp(
+    store: Store,
+) -> None:
+    """What ingress has in its hand when a reply arrives (#215), and the only
+    lookup it can afford on the three-second ack path."""
+    await store.open_slack_thread(
+        team_id="T01", channel="C0AI", thread_ts="1700.1", session_id="slack:task:01J@09:00"
+    )
+
+    found = await store.slack_thread_session(team_id="T01", channel="C0AI", thread_ts="1700.1")
+    other = await store.slack_thread_session(team_id="T01", channel="C0AI", thread_ts="1700.2")
+
+    assert found == "slack:task:01J@09:00"
+    assert other is None, "almost every thread in a workspace is somebody else's"
+
+
+async def test_a_thread_belongs_to_the_conversation_that_opened_it(store: Store) -> None:
+    """A redelivered turn re-claims a thread it already posted; it does not
+    take one over. The only way to arrive twice is the same turn arriving
+    twice, so the first writer is the right one."""
+    await store.open_slack_thread(
+        team_id="T01", channel="C0AI", thread_ts="1700.1", session_id="slack:task:01J@09:00"
+    )
+    await store.open_slack_thread(
+        team_id="T01", channel="C0AI", thread_ts="1700.1", session_id="slack:something:else"
+    )
+
+    assert (
+        await store.slack_thread_session(team_id="T01", channel="C0AI", thread_ts="1700.1")
+        == "slack:task:01J@09:00"
+    )

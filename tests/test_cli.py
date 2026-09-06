@@ -539,6 +539,69 @@ def test_task_add_refuses_a_schedule_that_fires_too_often(tmp_path: Path) -> Non
     assert "the floor is 15" in result.output
 
 
+def test_task_add_refuses_a_destination_that_is_not_configured(tmp_path: Path) -> None:
+    """The name has to mean something in *this* config, and the refusal says
+    what is on offer: an operator who typed the channel's name instead of the
+    destination's should hear about it now, not tomorrow morning."""
+    config = config_for(tmp_path / "siatt.db")
+
+    result = runner.invoke(
+        app,
+        [
+            "task",
+            "add",
+            "the overnight AI news",
+            "--cron",
+            "0 9 * * *",
+            "--destination",
+            "ai-news",
+            "--config",
+            str(config),
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "ai-news" in result.output
+    assert "none are configured" in result.output
+
+
+def test_task_add_points_a_schedule_at_a_configured_channel(tmp_path: Path) -> None:
+    """The one place a task can be given a channel it was not created in, and
+    a terminal is the reason: the name comes out of the operator's own config
+    file, which nothing arriving in a conversation can reach (§7.1)."""
+    db = tmp_path / "siatt.db"
+    config = db.parent / "config.toml"
+    config.write_text(f'[store]\npath = "{db}"\n\n[tasks.destinations]\nai-news = "C0AI"\n')
+
+    added = runner.invoke(
+        app,
+        [
+            "task",
+            "add",
+            "the overnight AI news",
+            "--cron",
+            "0 9 * * *",
+            "--destination",
+            "ai-news",
+            "--config",
+            str(config),
+        ],
+    )
+    listed = runner.invoke(app, ["task", "list", "--config", str(config)])
+
+    assert added.exit_code == 0, added.output
+    assert "ai-news" in listed.output, "a listing has to say where a task posts"
+
+    async def stored() -> tuple[str | None, str]:
+        async with await Store.open(db) as store:
+            (row,) = await store.raw("SELECT destination, surface FROM tasks")
+            return row["destination"], row["surface"]
+
+    destination, surface = asyncio.run(stored())
+    assert destination == "ai-news", "the name, never the channel it stands for"
+    assert surface == "slack", "a destination is a Slack channel, so the firing is a Slack event"
+
+
 def test_task_list_shows_a_schedule_that_stopped_reading_rather_than_a_blank(
     tmp_path: Path,
 ) -> None:

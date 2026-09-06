@@ -13,6 +13,7 @@ stored by `siatt vault set`, and nothing here has to know which.
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from pathlib import Path
 from typing import Any, Literal
@@ -48,6 +49,22 @@ NO_CHAT_PROVIDER = (
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_CLONE_PATH = "~/.siatt/ltm"
+
+#: The one destination that is not a channel somebody configured: the channel
+#: the task was created in, posted at top level so every firing starts its own
+#: thread. Reserved, so `[tasks.destinations]` cannot define a name that means
+#: something else — and it is the only destination a tool may set, because it
+#: reaches exactly the conversation the task already belongs to (§11.1).
+HERE = "here"
+
+#: What `siatt task add --destination` takes, and therefore what a key in
+#: `[tasks.destinations]` may be. A short word a person types on a terminal.
+_DESTINATION_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
+
+#: A Slack channel. `C` is what every channel is today, `G` a private group
+#: from before they were; `D` is a DM and `U` is a person, and neither is
+#: somewhere a schedule may be pointed.
+_CHANNEL_ID = re.compile(r"[CG][A-Z0-9]{1,40}")
 
 
 def config_path() -> Path:
@@ -597,6 +614,49 @@ class TaskSettings(BaseModel):
     #: task failing quietly forever is worse than one that stops.
     disable_after_failures: int = Field(default=5, ge=1)
 
+    #: Named Slack channels a standing task may be pointed at, as
+    #: `name = "C0123ABCD"`. Empty by default, which is what keeps a fresh
+    #: install unable to post anywhere nobody asked it to.
+    #:
+    #: This is the only place a channel id can enter the feature. A task row
+    #: holds one of these *names*; the id it stands for is read from here at
+    #: fire time, so pointing a schedule somewhere new is an operator editing
+    #: this file, and text arriving in a conversation cannot name a channel
+    #: that is not already in it (§7.1). Only `siatt task add --destination`
+    #: writes one — the `schedule_create` tool has no argument for it.
+    destinations: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("destinations")
+    @classmethod
+    def _real_channels(cls, value: dict[str, str]) -> dict[str, str]:
+        """Refuse at load time what would otherwise fail at nine in the morning.
+
+        A destination is a *channel*: `C` for one Slack converted to that id,
+        `G` for a legacy private group. A user id or a DM (`D`) is refused
+        outright rather than posted into — "every weekday, message this person"
+        is somebody else's conversation, and it is not what this feature is.
+        """
+        cleaned = {}
+        for name, channel in value.items():
+            key = name.strip()
+            if key == HERE:
+                raise ValueError(
+                    f"{HERE!r} is reserved: it means the channel a task was created in, "
+                    "so a configured destination cannot be called that"
+                )
+            if not _DESTINATION_NAME.fullmatch(key):
+                raise ValueError(
+                    f"{name!r} is not a destination name; use lowercase letters, digits, "
+                    "'-' and '_' (it is what `siatt task add --destination` takes)"
+                )
+            if not _CHANNEL_ID.fullmatch(channel.strip()):
+                raise ValueError(
+                    f"destination {key!r} is {channel!r}, which is not a Slack channel id. "
+                    "Channels start with C (or G); a D is a DM and a U is a person."
+                )
+            cleaned[key] = channel.strip()
+        return cleaned
+
 
 class RetrySettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -634,6 +694,33 @@ class Config(BaseModel):
     #: USD per million tokens, keyed by model-name prefix. Empty by default:
     #: a stale built-in price table is worse than an absent one.
     pricing: dict[str, PriceSettings] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _destinations_are_reachable(self) -> Config:
+        """Refuse a destination Siatt would post into and then ignore.
+
+        `slack.allowed_channels` narrows what ingress reads. A destination
+        outside it would still be posted into — egress does not consult the
+        allowlist — and every reply under that post would be dropped as
+        chatter, which is a schedule that talks to a channel it cannot hear.
+        Two settings that only disagree at nine in the morning are worth one
+        check at load time.
+        """
+        allowed = set(self.slack.allowed_channels)
+        if not allowed:
+            return self
+        stranded = sorted(
+            f"{name} ({channel})"
+            for name, channel in self.tasks.destinations.items()
+            if channel not in allowed
+        )
+        if stranded:
+            raise ValueError(
+                f"task destination(s) {', '.join(stranded)} are not in slack.allowed_channels, "
+                "so a reply under anything posted there would be ignored. Add them to the "
+                "allowlist, or point the destination somewhere Siatt reads."
+            )
+        return self
 
     def agent_config(self) -> AgentConfig:
         settings = self.agent
@@ -798,6 +885,24 @@ def _toml_value(value: Any) -> str:
     return f'"{text}"'
 
 
+def _map(name: str, values: dict[str, str], *, comment: str = "") -> list[str]:
+    """Render a table of names to strings as its own section.
+
+    `[tasks.destinations]` is a table, not a field: `_table` renders scalars
+    and lists, and a dict handed to `_toml_value` comes out as a quoted Python
+    repr that the loader then refuses. Its own section is also what somebody
+    editing this file by hand would write.
+    """
+    if not values:
+        return []
+    lines = [f"[{name}]"]
+    if comment:
+        lines.insert(0, comment)
+    width = max(len(key) for key in values)
+    lines += [f"{key.ljust(width)} = {_toml_value(value)}" for key, value in values.items()]
+    return [*lines, ""]
+
+
 def _table(
     name: str,
     model: BaseModel,
@@ -876,9 +981,14 @@ def render_toml(cfg: Config) -> str:
         ("store", cfg.store),
         ("retry", cfg.retry),
         ("budget", cfg.budget),
-        ("tasks", cfg.tasks),
     ):
         lines += _table(name, section)
+    lines += _table("tasks", cfg.tasks, exclude={"destinations"})
+    lines += _map(
+        "tasks.destinations",
+        cfg.tasks.destinations,
+        comment="# Channels a standing task may be pointed at, by name (§7.1).",
+    )
     for model, price in cfg.pricing.items():
         lines += _table(f'pricing."{model}"', price, full=True)
 

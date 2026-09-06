@@ -323,6 +323,7 @@ CREATE TABLE tasks (
   timezone      TEXT,                   -- IANA, or NULL for UTC
   state         TEXT NOT NULL DEFAULT 'active',  -- active | paused | done
   fire_once     INTEGER NOT NULL DEFAULT 0,      -- a one-shot: fires, then done
+  destination   TEXT,                   -- a *name*: NULL | 'here' | a key in config
   created_at    TEXT NOT NULL,
   last_run_at   TEXT,
   last_job_id   TEXT,
@@ -358,10 +359,33 @@ not stampede when it comes back.
 `timezone` is stored beside the expression rather than folded into it, because
 "9am Seoul" moves twice a year and the five fields do not.
 
-**There is nowhere in this table to choose a destination.** `session_id`,
-`channel`, `reply_to` and `scope` are copied from the conversation that created
-the task and are never settable afterwards — §7.1 for why that is structural
-rather than a validation, §11.1 for what it means for visibility.
+**There is no channel in this table.** `session_id`, `channel`, `reply_to` and
+`scope` are copied from the conversation that created the task and are never
+settable afterwards — §7.1 for why that is structural rather than a validation,
+§11.1 for what it means for visibility.
+
+`destination` is the one thing that says a firing lands somewhere other than
+the thread it was asked in, and it is a *name*, never an id:
+
+| value | where it posts | who may set it |
+| --- | --- | --- |
+| `NULL` | the thread it was created in | the default |
+| `'here'` | that same channel, at top level: each firing starts its own thread | the `schedule_create` tool, and the CLI |
+| a name | the channel `[tasks.destinations]` gives that name | `siatt task add --destination` only |
+
+The name is resolved against config **at fire time**, not at creation, so where
+a schedule posts is something the operator holds and keeps holding: a name that
+is no longer configured resolves to nothing, and the run fails and pauses the
+task rather than falling back to anywhere else. A firing with a destination runs
+under a session of its own (`slack:task:<id>@<fire>`) and under the scope of
+where it lands rather than of who asked for it — a task set up in a DM and
+pointed at a channel by the operator can say what that channel may already see,
+and nothing more.
+
+Siatt's own posts are the one place it opens a thread rather than joining one,
+and ingress has to be able to recognize them: `slack_threads` maps a root
+message to the conversation that posted it, so a reply under this morning's
+briefing continues that turn instead of being read as chatter and ignored.
 
 `consecutive_failures` is what stops a task failing for a reason nobody is
 watching: after `tasks.disable_after_failures` runs in a row that never reached
@@ -571,6 +595,17 @@ to #general"*. The defense is not a check on the argument. There is no argument.
 Where a task posts, whose it is, and what it may see all come off the
 `ToolContext` the turn was built from, and the schema forbids extra properties,
 so the model has no way to express a destination and no way to invent one.
+
+`new_thread` is not a hole in that, and it is worth saying why rather than
+trusting the reader to see it. It chooses the *shape* of a firing — its own
+thread in this channel, rather than another message in the thread this was
+asked in — and resolves to `context.channel`, the channel the words asking for
+it were already said in. The set of places a tool can reach is still exactly
+one and still the caller's own; the schedule cannot say anything the person
+asking could not have said themselves, in the same place, to the same people.
+Pointing a schedule at a *different* channel needs `siatt task add
+--destination` against a name in `[tasks.destinations]` — a terminal and a
+config file, neither of which text arriving in a conversation can reach.
 
 `schedule_list` and `schedule_cancel` narrow to the calling session **in the
 query**, not by filtering what came back: a tool that reads every row and then
@@ -947,7 +982,16 @@ Details that bite, in rough order of how quickly they will bite:
   arrives *twice*, once as `app_mention` and once as `message`, under two
   different event ids and one `ts`. `slack:<team>:<channel>:<ts>` covers both,
   and covers them without knowing which subscriptions an install was granted.
-- **Session key** = `thread_ts or ts`. Always reply in-thread.
+- **Session key** = `thread_ts or ts`. Always reply in-thread — except in the
+  one case Siatt is not replying at all: a standing task with a destination
+  (§4.4) posts with no `thread_ts`, which is what starts a thread. Those get no
+  placeholder either; nobody asked just now, and a `thinking…` at top level in
+  a channel is a message people answer rather than reassurance.
+- **A thread Siatt started is one it must recognize.** The session key derived
+  from a brand-new thread has no history and nobody mentioned anything in it,
+  so both tests that make a reply worth answering say no. `slack_threads` maps
+  the root message to the conversation that posted it, and the reply continues
+  that conversation instead of opening an empty one beneath it.
 - **Nothing from Slack is `workspace`.** A DM is `private:<user>`, anything else
   is `channel:<channel>`. `workspace` is the widest scope there is; widening one
   is a decision with a person in it, not a default every public channel picks
@@ -998,6 +1042,15 @@ under that DM's scope; asked for in a channel it stays in that channel. The
 scope is copied from the session at creation and is never read from the request,
 so *"and post it publicly every morning"* typed into a DM is not something that
 can be said.
+
+The operator can say it, with `siatt task add --destination`, and that firing
+runs under the **destination's** scope rather than the creator's — not as a
+convenience, but because the alternative is the leak this section is about. A
+task carrying `private:U0456` into a public channel would retrieve that
+person's memories and say them there; carrying `channel:C0123` instead means it
+can only say what the channel it is posting in may already see. The prompt is
+still the owner's own words, published deliberately by the person who runs the
+install, which is a different act from a memory escaping its scope.
 
 ### 11.2 Secrets
 
@@ -1228,6 +1281,9 @@ max_per_owner          = 20           # per person, counting active and paused
 min_interval_minutes   = 15           # floor on the gap the expression actually produces
 disable_after_failures = 5            # consecutive failed runs before it is paused
 
+[tasks.destinations]                  # channels a task may be pointed at, by name
+ai-news = "C0123ABCD"                 # `siatt task add --destination ai-news`; §7.1
+
 [agent]                               # how much work one turn may do
 max_tool_iterations = 40              # rounds of tool calls before it must answer
 max_turn_seconds    = 600             # wall clock, checked between rounds
@@ -1254,7 +1310,8 @@ siatt inbox status             what is queued, and what stopped being retried
 siatt inbox retry              requeue every dead-lettered event
 siatt task list                every standing task, and when each fires next
 siatt task add "<prompt>" --cron "0 9 * * 1-5" [--tz Asia/Seoul] [--once]
-                              [--session <id>] [--owner <id>]   operator-only; §7.1
+                              [--session <id>] [--owner <id>]
+                              [--destination <name>]            operator-only; §7.1
 siatt task rm <id>             delete it
 siatt task pause <id>          stop it firing, without forgetting it
 siatt task resume <id>         start it again, and clear the failures that stopped it

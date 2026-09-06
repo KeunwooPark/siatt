@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from siatt.config import Config, TaskSettings
+from siatt.config import HERE, Config, TaskSettings
 from siatt.core.events import InboundEvent
 from siatt.core.schedule_tools import schedule_tools
 from siatt.core.tools import Tool, ToolContext, ToolRegistry
@@ -104,6 +104,38 @@ async def test_there_is_no_argument_for_where_a_task_posts(store: Store) -> None
 
     assert result.is_error
     assert not await Tasks(store).all()
+
+
+async def test_asking_for_a_new_thread_posts_in_the_same_channel_at_top_level(
+    store: Store,
+) -> None:
+    """The shape a person actually wants for a morning briefing: its own thread
+    each day, in the channel they asked in, rather than buried in the thread
+    where they set it up."""
+    await call(store, "schedule_create", {**ASK, "new_thread": True})
+
+    (task,) = await Tasks(store).all()
+    assert task.destination == HERE
+    assert task.channel == "C0123"
+
+
+async def test_a_new_thread_is_a_shape_and_not_a_destination(store: Store) -> None:
+    """`here` resolves to the caller's own channel, so the schedule reaches
+    exactly the place the words asking for it were said in — the guarantee
+    §7.1 makes, kept while adding an argument next to it."""
+    create = tools_for(store)["schedule_create"]
+    assert set(create.input_schema["properties"]) == {
+        "prompt",
+        "cron",
+        "timezone",
+        "fire_once",
+        "new_thread",
+    }
+
+    await call(store, "schedule_create", {**ASK, "new_thread": True})
+
+    (task,) = await Tasks(store).all()
+    assert task.delivery("task:x@2026-09-08T09:00", {}).channel == IN_A_CHANNEL.channel
 
 
 async def test_a_task_asked_for_in_a_dm_stays_in_the_dm(store: Store) -> None:

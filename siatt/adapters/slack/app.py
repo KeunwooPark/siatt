@@ -152,7 +152,10 @@ class SlackAdapter:
         """
         try:
             decision = await normalize(
-                event, context=self._context, known_session=self._known_session
+                event,
+                context=self._context,
+                known_session=self._known_session,
+                thread_session=self._thread_session,
             )
         except Exception:
             # Belt to the braces in `events.py`. Everything up to the INSERT is
@@ -235,6 +238,24 @@ class SlackAdapter:
             scope=event.scope,
         )
 
+    async def opened_thread(self, event: InboundEvent, ts: str) -> None:
+        """Remember a thread this answer started, so replies under it are read.
+
+        Only a message posted with no `thread_ts`, which on this surface means
+        a standing task firing into a channel: everything a person says arrives
+        in a thread already. Without the row, ingress derives a session id from
+        the new thread that nothing has ever used, finds no mention in the
+        reply, and ignores it — a briefing nobody can answer (#215).
+        """
+        if event.reply_to is not None or not event.channel or not ts:
+            return
+        await self.runtime.store.open_slack_thread(
+            team_id=self._context.team_id,
+            channel=event.channel,
+            thread_ts=ts,
+            session_id=event.session_id,
+        )
+
     async def revise(self, decision: Changed) -> None:
         """Apply an edit or a deletion, here on the ack path rather than behind
         the queue.
@@ -262,6 +283,11 @@ class SlackAdapter:
     async def _known_session(self, session_id: str) -> bool:
         return await self.runtime.store.get_session(session_id) is not None
 
+    async def _thread_session(self, channel: str, thread_ts: str) -> str | None:
+        return await self.runtime.store.slack_thread_session(
+            team_id=self._context.team_id, channel=channel, thread_ts=thread_ts
+        )
+
     async def _users_info(self, user_id: str) -> Mapping[str, Any]:
         """One profile, unwrapped from the envelope Slack puts it in.
 
@@ -283,8 +309,14 @@ class SlackAdapter:
         indistinguishable from one that broke, and somebody who thinks Siatt
         broke asks again — which is a second turn, a second model call, and two
         answers to one question.
+
+        Except when there is no thread yet, which is a standing task posting
+        into a channel (#215). Nobody is waiting on that one — its whole
+        premise is that nobody asked just now — and a `thinking…` sitting at
+        top level in a channel is not reassurance, it is a message people reply
+        to. That turn says nothing until it has something to say.
         """
-        if not event.channel:
+        if not event.channel or event.reply_to is None:
             return _Posted(self, event)
         message = LiveMessage(
             _ClientPoster(self.client),
@@ -311,7 +343,9 @@ class SlackAdapter:
         posted = await self.client.chat_postMessage(
             channel=event.channel, thread_ts=event.reply_to, text=text
         )
-        await self.remember_answer(event, result, str(posted.get("ts") or ""))
+        ts = str(posted.get("ts") or "")
+        await self.opened_thread(event, ts)
+        await self.remember_answer(event, result, ts)
 
     def _remember(self, external_id: str, ts: str) -> None:
         self._unfinished[external_id] = ts

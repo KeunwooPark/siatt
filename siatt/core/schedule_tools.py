@@ -19,7 +19,18 @@ work under.
 `channel`, `reply_to`, `scope` and `owner` come off `ToolContext`, which the
 turn built from the event. There is no argument for where a task posts, so no
 instruction smuggled into text Siatt read can create one that posts anywhere but
-the thread it was created in. A task created in a DM stays in the DM (§11.1).
+the conversation it was created in. A task created in a DM stays in the DM
+(§11.1).
+
+`new_thread` is not an exception to that, and the distinction is worth being
+exact about because it is the one an injected instruction would try to blur. It
+chooses the *shape* of the answer — its own thread in this channel, rather than
+another message in the thread this was asked in — and not the place: it resolves
+to `channel`, off the same `ToolContext`, which is the channel these words were
+already said in. The set of places a tool can reach is still exactly one, and it
+is still the caller's own. Pointing a schedule at a *different* channel is
+operator work, `siatt task add --destination` against a name in
+`[tasks.destinations]`, and there is deliberately no way to ask for it here.
 
 **Listing and cancelling are scoped to the calling session**, for the same
 reason: text arriving in one channel must not be able to enumerate or delete
@@ -37,6 +48,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from siatt.config import HERE
 from siatt.core.tools import Tool, ToolContext
 from siatt.runner.cron import CronError
 from siatt.runner.tasks import ACTIVE, Task, TaskError, Tasks, render_fires
@@ -82,6 +94,9 @@ def _create_tool(tasks: Tasks) -> Tool:
                 cron=str(args["cron"]),
                 timezone=_timezone(args),
                 fire_once=bool(args.get("fire_once", False)),
+                # Still not a destination: `here` *is* `context.channel`, which
+                # is where this task was already going to post.
+                destination=HERE if args.get("new_thread") else None,
             )
         except TaskError as exc:
             # A refusal, not a crash: the model wrote the expression, and it is
@@ -135,6 +150,17 @@ def _create_tool(tasks: Tasks) -> Tool:
                 "fire_once": {
                     "type": "boolean",
                     "description": "Run it once and finish, rather than every time it matches.",
+                },
+                "new_thread": {
+                    "type": "boolean",
+                    "description": (
+                        "Post each run as a new thread in this channel, instead of "
+                        "replying in this one. Use it for something recurring that "
+                        "people will want to discuss on its own — a morning "
+                        "briefing — and leave it off for a reminder that belongs "
+                        "with the conversation it came out of. Either way it posts "
+                        "here; there is no way to send a schedule somewhere else."
+                    ),
                 },
             },
             "required": ["prompt", "cron"],
