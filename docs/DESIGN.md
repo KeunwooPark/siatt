@@ -654,7 +654,12 @@ Hybrid, cheap-first, with an agentic escape hatch.
 
 1. **Query construction.** Rewrite the incoming message plus recent turns into a
    standalone retrieval query (utility model). Skip the rewrite when the message
-   is already self-contained and substantive.
+   is already self-contained and substantive. Resolve any relative day the
+   message names — "yesterday", "어제", "3 days ago" — into the absolute dates a
+   memory would have been written with, and search for those as phrases. A
+   relative word shares no token with the date it means, so without this step
+   the memory that answers "what did I do yesterday?" is not ranked low, it is
+   absent (#221). Days are UTC, as they are everywhere else here.
 2. **Candidate generation**, in parallel:
    - FTS5 / BM25 over `chunks`
    - vector kNN over `chunks_vec`

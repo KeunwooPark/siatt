@@ -38,6 +38,11 @@ def _query(trace: RetrievalTrace) -> list[str]:
         # matter to somebody reading this to work out why a turn found nothing.
         lines.append("  rewritten  no — the message was used as it stands")
     lines.append(f"  match      {trace.match_expression or '(nothing searchable)'}")
+    # Only when something resolved. On the question this was built for it is
+    # the whole answer — "yesterday" became a date, and the memory it found was
+    # invisible to every other term in the sentence.
+    if trace.dates:
+        lines.append(f"  dates      {', '.join(trace.dates)}")
     lines.append(f"  scope      {trace.scope}")
     return [*lines, ""]
 
