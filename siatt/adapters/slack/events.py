@@ -106,6 +106,17 @@ Decision = Accepted | Changed | Reacted | Ignored
 #: a reply in a thread it is part of is told from chatter it should stay out of.
 KnownSession = Callable[[str], Awaitable[bool]]
 
+#: The conversation a thread belongs to, when Siatt is the one that started it.
+#: Called with a channel and a thread timestamp; None for every thread somebody
+#: else opened, which is almost all of them.
+#:
+#: A thread Siatt opened has no history under the id `session_id` would derive
+#: for it and nobody mentioned anything in it, so both of the tests below would
+#: read a reply there as chatter. This is what says otherwise — and what makes
+#: the reply continue the conversation that posted, rather than open an empty
+#: one under it.
+ThreadSession = Callable[[str, str], Awaitable[str | None]]
+
 
 def session_id(team: str, channel: str, thread: str) -> str:
     """The actor key: one Slack thread, one serialized conversation."""
@@ -125,7 +136,11 @@ def message_id(team: str, channel: str, ts: str) -> str:
 
 
 async def normalize(
-    event: dict[str, Any], *, context: SlackContext, known_session: KnownSession
+    event: dict[str, Any],
+    *,
+    context: SlackContext,
+    known_session: KnownSession,
+    thread_session: ThreadSession | None = None,
 ) -> Decision:
     """Turn one Slack event into something to answer, or say why not."""
     subtype = str(event.get("subtype") or "")
@@ -149,17 +164,28 @@ async def normalize(
 
     text = str(event.get("text") or "")
     is_dm = channel.startswith(_DM_PREFIX)
-    thread = str(event.get("thread_ts") or ts)
-    session = session_id(context.team_id, channel, thread)
+    if not is_dm and context.allowed_channels and channel not in context.allowed_channels:
+        # First, and before any lookup: a channel Siatt was told not to read is
+        # one it should not be asking questions about either.
+        return Ignored(f"channel {channel} is not on the allowlist")
 
-    if not is_dm:
-        if context.allowed_channels and channel not in context.allowed_channels:
-            return Ignored(f"channel {channel} is not on the allowlist")
-        # In a channel, silence is the default. Siatt answers when it is spoken
-        # to, and thereafter in that thread — which is a question about a
-        # conversation that already exists, not about this message.
-        if not _mentions(text, context.bot_user_id) and not await known_session(session):
-            return Ignored("not addressed to Siatt")
+    thread = str(event.get("thread_ts") or ts)
+    # A thread Siatt opened belongs to the conversation that opened it, whatever
+    # id this thread's own timestamp would otherwise derive.
+    ours = await thread_session(channel, thread) if thread_session else None
+    session = ours or session_id(context.team_id, channel, thread)
+
+    # In a channel, silence is the default. Siatt answers when it is spoken to,
+    # and thereafter in that thread — which is a question about a conversation
+    # that already exists, not about this message. A thread it started itself is
+    # that same question with the answer already known.
+    if (
+        not is_dm
+        and not _mentions(text, context.bot_user_id)
+        and ours is None
+        and not await known_session(session)
+    ):
+        return Ignored("not addressed to Siatt")
 
     return Accepted(
         InboundEvent(

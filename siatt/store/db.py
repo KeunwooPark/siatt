@@ -1209,13 +1209,14 @@ class Store:
         cron: str,
         timezone: str | None,
         fire_once: bool,
+        destination: str | None = None,
     ) -> None:
         """Insert a task. The caller has already decided it is allowed."""
         async with self._serial:
             await self._conn.execute(
                 "INSERT INTO tasks (id, owner, surface, session_id, channel, reply_to, scope,"
-                " prompt, cron, timezone, fire_once, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " prompt, cron, timezone, fire_once, destination, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     task_id,
                     owner,
@@ -1228,6 +1229,7 @@ class Store:
                     cron,
                     timezone,
                     int(fire_once),
+                    destination,
                     _now(),
                 ),
             )
@@ -1672,6 +1674,48 @@ class Store:
                 (memory_id, memory_name, _now(), team_id, user_id),
             )
             await self._conn.commit()
+
+    # -- slack threads ---------------------------------------------------------
+
+    async def open_slack_thread(
+        self, *, team_id: str, channel: str, thread_ts: str, session_id: str
+    ) -> None:
+        """Record that Siatt started this thread, out of this conversation.
+
+        Written once the root message has a timestamp, and never rewritten: a
+        thread belongs to the conversation that opened it, and a second turn
+        posting into the same channel opens its own. `DO NOTHING` rather than
+        an upsert because the only way to arrive twice is a redelivery of the
+        turn that already claimed it.
+        """
+        async with self._serial:
+            await self._conn.execute(
+                "INSERT INTO slack_threads (team_id, channel, thread_ts, session_id, created_at)"
+                " VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT (team_id, channel, thread_ts) DO NOTHING",
+                (team_id, channel, thread_ts, session_id, _now()),
+            )
+            await self._conn.commit()
+
+    async def slack_thread_session(
+        self, *, team_id: str, channel: str, thread_ts: str
+    ) -> str | None:
+        """The conversation a thread belongs to, if Siatt opened it.
+
+        On the three-second ack path, so it is one primary-key lookup and
+        nothing else. None is the ordinary answer: almost every thread in a
+        workspace was started by somebody else.
+        """
+        async with (
+            self._serial,
+            self._conn.execute(
+                "SELECT session_id FROM slack_threads"
+                " WHERE team_id = ? AND channel = ? AND thread_ts = ?",
+                (team_id, channel, thread_ts),
+            ) as cur,
+        ):
+            row = await cur.fetchone()
+        return str(row["session_id"]) if row else None
 
     # -- leases --------------------------------------------------------------
 

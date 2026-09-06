@@ -153,6 +153,90 @@ async def test_a_reply_goes_to_the_thread_the_question_was_asked_in() -> None:
     assert reply.session_id == top.session_id
 
 
+# -- threads Siatt started itself --------------------------------------------
+
+
+def opened(by: dict[str, str]) -> Any:
+    """A `ThreadSession` over a map of thread timestamp to conversation."""
+
+    async def lookup(channel: str, thread_ts: str) -> str | None:
+        return by.get(thread_ts)
+
+    return lookup
+
+
+async def test_a_reply_under_a_post_siatt_started_needs_no_mention() -> None:
+    """A standing task's morning briefing is a thread nobody mentioned Siatt
+    in, under a timestamp no session has ever used. Both tests that make a
+    reply worth answering say no, so without the thread map the one thing
+    people will actually do with a briefing — reply to it — is ignored."""
+    body = in_channel(
+        "which of those is worth reading?", "1700000000.000200", thread="1700000000.000100"
+    )
+
+    decision = await normalize(
+        body,
+        context=context(),
+        known_session=never,
+        thread_session=opened({"1700000000.000100": "slack:task:01J@2026-09-08T09:00"}),
+    )
+
+    assert accepted(decision).event.session_id == "slack:task:01J@2026-09-08T09:00"
+
+
+async def test_the_reply_continues_the_turn_that_posted_rather_than_a_new_one() -> None:
+    """The session is the one that produced the post, not the one this thread's
+    timestamp would derive — which is the difference between "what about the
+    third one?" being answerable and it arriving with nothing to refer to."""
+    body = in_channel("and the third?", "1700000000.000200", thread="1700000000.000100")
+
+    event = accepted(
+        await normalize(
+            body,
+            context=context(),
+            known_session=never,
+            thread_session=opened({"1700000000.000100": "slack:task:01J@2026-09-08T09:00"}),
+        )
+    ).event
+
+    assert event.session_id != f"slack:{TEAM}:C1:1700000000.000100"
+    assert event.reply_to == "1700000000.000100", "and the answer goes back into that thread"
+    assert event.scope == "channel:C1", "under the channel's scope, like anything else said here"
+
+
+async def test_a_thread_siatt_did_not_start_is_still_ignored() -> None:
+    body = in_channel("morning all", "1700000000.000200", thread="1700000000.000999")
+
+    decision = await normalize(
+        body,
+        context=context(),
+        known_session=never,
+        thread_session=opened({"1700000000.000100": "slack:task:01J@2026-09-08T09:00"}),
+    )
+
+    assert isinstance(decision, Ignored)
+
+
+async def test_a_channel_off_the_allowlist_is_not_even_looked_up() -> None:
+    """The allowlist is what an install uses to say "do not read this channel",
+    and asking a question about a message from one is already reading it."""
+    asked: list[str] = []
+
+    async def lookup(channel: str, thread_ts: str) -> str | None:
+        asked.append(channel)
+        return "slack:task:01J@2026-09-08T09:00"
+
+    decision = await normalize(
+        in_channel(channel="C0PRIVATE"),
+        context=context(allowed=frozenset({"C1"})),
+        known_session=always,
+        thread_session=lookup,
+    )
+
+    assert isinstance(decision, Ignored)
+    assert not asked
+
+
 async def test_somebody_elses_mention_stays_in_the_text() -> None:
     body = in_channel(f"<@{BOT}> ask <@U0OTHER|jane> about deploys")
 

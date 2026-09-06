@@ -20,6 +20,7 @@ from siatt.adapters.slack.app import NO_HTTP_VERIFICATION, SlackAdapter
 from siatt.adapters.slack.events import SlackContext, normalize
 from siatt.core.agent import Agent
 from siatt.core.context import ContextPacker
+from siatt.core.events import InboundEvent
 from siatt.core.revise import TOMBSTONE
 from siatt.core.tools import ToolRegistry
 from siatt.llm.registry import ModelRole, ProviderRegistry
@@ -302,6 +303,86 @@ async def test_the_answer_goes_back_into_the_thread(store: Store, tokenizer: Tok
     assert client.posted[0]["channel"] == "C0DEPLOY"
     assert client.posted[0]["thread_ts"] == "1700000000.000100"
     assert client.messages == ["noted"], "one message in the thread, and it is the answer"
+
+
+def a_firing(session_id: str = "slack:task:01J@2026-09-08T09:00") -> InboundEvent:
+    """A standing task with a destination, as `task_handler` queues one: a
+    channel, no thread, and nobody waiting."""
+    return InboundEvent(
+        source="slack",
+        external_id=f"task:{session_id}",
+        session_id=session_id,
+        text="what happened in AI overnight",
+        scope="channel:C0DEPLOY",
+        author=HUMAN,
+        channel="C0DEPLOY",
+        reply_to=None,
+        origin="scheduled",
+    )
+
+
+async def test_a_firing_with_no_thread_posts_once_and_says_nothing_first(
+    store: Store, tokenizer: Tokenizer
+) -> None:
+    """A top-level `thinking…` is not reassurance — nobody asked just now — it
+    is a message people reply to, in a channel, that is about to be rewritten
+    into something else."""
+    adapter, client = make_adapter(store, tokenizer)
+    running = asyncio.create_task(adapter.runtime.run())
+    try:
+        await adapter.runtime.submit(a_firing())
+        await until(lambda: len(client.posted) >= 1)
+    finally:
+        adapter.runtime.stop()
+        await asyncio.wait_for(running, timeout=10.0)
+
+    assert len(client.posted) == 1
+    assert client.posted[0].get("thread_ts") is None, "no thread is what starts one"
+    assert client.messages == ["noted"]
+    assert not client.updates, "nothing was posted early enough to need rewriting"
+
+
+async def test_a_reply_under_a_firing_is_answered_without_a_mention(
+    store: Store, tokenizer: Tokenizer
+) -> None:
+    """The whole point of posting a briefing: somebody can answer it. The
+    thread is one nobody mentioned Siatt in, under a timestamp no session has
+    ever used, so this only works because the post was recorded as ours."""
+    adapter, client = make_adapter(store, tokenizer)
+    running = asyncio.create_task(adapter.runtime.run())
+    try:
+        await adapter.runtime.submit(a_firing())
+        await until(lambda: len(client.posted) >= 1)
+        root = client.posted[0]["ts"]
+
+        await adapter.on_event(
+            {
+                "type": "message",
+                "channel_type": "channel",
+                "channel": "C0DEPLOY",
+                "user": HUMAN,
+                "text": "which of those is worth reading?",
+                "ts": "1700000000.000200",
+                "thread_ts": root,
+            }
+        )
+        await until(lambda: len(client.posted) >= 2)
+    finally:
+        adapter.runtime.stop()
+        await asyncio.wait_for(running, timeout=10.0)
+
+    assert client.posted[1]["thread_ts"] == root, "answered in the thread it started"
+    # And in the conversation that posted the briefing, so "those" refers to
+    # something.
+    assert (
+        await store.slack_thread_session(team_id=TEAM, channel="C0DEPLOY", thread_ts=root)
+        == "slack:task:01J@2026-09-08T09:00"
+    )
+    history = await store.raw(
+        "SELECT session_id FROM messages WHERE session_id = ? ORDER BY seq",
+        ("slack:task:01J@2026-09-08T09:00",),
+    )
+    assert len(history) == 4, "two turns, question and answer each, in one conversation"
 
 
 async def test_a_turn_with_nothing_to_say_says_why(store: Store, tokenizer: Tokenizer) -> None:

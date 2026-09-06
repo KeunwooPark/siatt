@@ -1,0 +1,26 @@
+-- Where a standing task posts, when that is not the thread it was asked in.
+--
+-- 0018 said there was nowhere in this table to choose a destination, and the
+-- reason still holds: a channel id in a row is a channel id a model could put
+-- there, and "post this every morning in #general" typed into a DM is the
+-- thing §11.1 exists to prevent.
+--
+-- So this column holds a *name*, never a channel. Two kinds of name, and
+-- neither of them widens what the task can reach:
+--
+--   NULL     the thread the task was created in. Unchanged, and the default.
+--   'here'   the channel it was created in, at top level: each firing starts
+--            its own thread. The same channel, the same scope, the same people
+--            — only a different shape, which is why a tool may set it.
+--   <name>   a key in `[tasks.destinations]`, which is operator config. Only
+--            `siatt task add --destination` writes one, and only config can
+--            turn the name into a channel id, at fire time. A name that is no
+--            longer configured resolves to nothing and the task fails, is
+--            paused and says so — it does not fall back to somewhere else.
+--
+-- `channel` and `reply_to` keep the role they had: the conversation this task
+-- came from. They are where its owner is told when it is paused, which is the
+-- only place that message means anything, and for 'here' they are also what it
+-- posts into.
+
+ALTER TABLE tasks ADD COLUMN destination TEXT;

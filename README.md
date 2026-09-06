@@ -28,7 +28,12 @@ daemon: a restart loses nothing and a crashed job runs again.
 **v5 in progress — it acts on its own.** A standing task is a schedule somebody
 set up — *"every weekday at 9am, tell me what happened in AI overnight"*. Ask
 for one in the conversation you want it to answer in, and it fires there, with
-the same memory and the same tools as when you asked.
+the same memory and the same tools as when you asked. Ask for it as a new
+thread and each morning gets its own, in the same channel, answerable by
+anybody who replies under it. Pointing one at a *different* channel is the
+operator's own doing — a name in `[tasks.destinations]` and `siatt task add
+--destination` — because a schedule that could be told where to post is a
+schedule that can be told to say a DM out loud.
 
 | job | when | does |
 | --- | --- | --- |

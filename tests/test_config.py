@@ -6,10 +6,13 @@ import pytest
 from pydantic import ValidationError
 
 from siatt.config import (
+    HERE,
     BrowserSettings,
     Config,
     FetchSettings,
     SearchSettings,
+    SlackSettings,
+    TaskSettings,
     config_from_env,
     load_config,
     write_config,
@@ -450,3 +453,63 @@ def test_a_default_config_says_nothing_about_the_browser(tmp_path: Path) -> None
 def test_a_render_bound_that_is_not_a_bound_is_refused(kwargs: dict[str, float]) -> None:
     with pytest.raises(ValidationError):
         BrowserSettings(**kwargs)
+
+
+# -- task destinations -------------------------------------------------------
+#
+# The only place a channel id can enter the standing-task feature (#215). A
+# name here is what `siatt task add --destination` takes and what a task row
+# stores, so what this section is really checking is that the thing an operator
+# writes by hand fails loudly rather than at nine tomorrow morning.
+
+
+def test_a_destination_is_a_channel_and_not_a_person() -> None:
+    """`D` is a DM and `U` is a user. "Every weekday, message this person" is
+    somebody else's conversation, and it is not what a destination is."""
+    with pytest.raises(ValidationError) as caught:
+        TaskSettings(destinations={"jane": "D0999"})
+
+    assert "not a Slack channel id" in str(caught.value)
+
+
+def test_here_is_reserved_because_it_already_means_something() -> None:
+    with pytest.raises(ValidationError) as caught:
+        TaskSettings(destinations={HERE: "C0123ABCD"})
+
+    assert "reserved" in str(caught.value)
+
+
+def test_a_destination_name_is_something_a_person_types_on_a_terminal() -> None:
+    with pytest.raises(ValidationError):
+        TaskSettings(destinations={"#ai news": "C0123ABCD"})
+
+    assert TaskSettings(destinations={"ai-news": "C0123ABCD"}).destinations == {
+        "ai-news": "C0123ABCD"
+    }
+
+
+def test_a_destination_siatt_would_not_read_is_refused_at_load_time() -> None:
+    """Egress does not consult the allowlist and ingress does, so this pair
+    only disagrees when somebody replies to a briefing — and then the reply is
+    dropped as chatter. Two settings that fail each other are worth one check
+    here."""
+    with pytest.raises(ValidationError) as caught:
+        Config(
+            slack=SlackSettings(allowed_channels=["C0OTHER"]),
+            tasks=TaskSettings(destinations={"ai-news": "C0AI"}),
+        )
+
+    assert "allowed_channels" in str(caught.value)
+
+
+def test_an_empty_allowlist_narrows_nothing_and_strands_nothing() -> None:
+    cfg = Config(tasks=TaskSettings(destinations={"ai-news": "C0AI"}))
+
+    assert cfg.tasks.destinations["ai-news"] == "C0AI"
+
+
+def test_the_destinations_survive_the_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    write_config(Config(tasks=TaskSettings(destinations={"ai-news": "C0AI"})), path)
+
+    assert load_config(path).tasks.destinations == {"ai-news": "C0AI"}

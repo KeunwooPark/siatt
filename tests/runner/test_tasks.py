@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from siatt.config import Config, TaskSettings
+from siatt.config import HERE, Config, TaskSettings
 from siatt.core.events import InboundEvent
 from siatt.runner.cron import Cron
 from siatt.runner.jobs import default_specs
@@ -515,6 +515,169 @@ async def test_a_task_created_in_a_dm_stays_in_the_dm(store: Store) -> None:
     (event,) = await events(store)
     assert event.scope == "dm:U01"
     assert event.channel == "D0999"
+
+
+async def test_a_task_may_not_be_pointed_at_a_destination_nobody_configured(
+    store: Store,
+) -> None:
+    """The name is checked when it is written as well as when it is fired: a
+    schedule that could never resolve is not a schedule, and an operator who
+    typed the channel's name instead of the destination's should hear about it
+    now rather than tomorrow morning."""
+    with pytest.raises(TaskError) as caught:
+        await a_task(store, destination="ai-news")
+
+    assert "ai-news" in str(caught.value)
+    assert "none are configured" in str(caught.value)
+    assert not await Tasks(store).all()
+
+
+async def test_here_needs_a_channel_to_be_here_in(store: Store) -> None:
+    tasks = Tasks(store, TaskSettings())
+
+    with pytest.raises(TaskError):
+        await tasks.create(
+            owner="cli",
+            surface="slack",
+            session_id="cli",
+            channel=None,
+            prompt="what happened overnight",
+            cron=WEEKDAY_NINE,
+            destination=HERE,
+        )
+
+
+async def test_a_destination_is_a_slack_channel_and_says_so_off_slack(store: Store) -> None:
+    with pytest.raises(TaskError) as caught:
+        await a_task(store, surface="cli", destination=HERE)
+
+    assert "'cli'" in str(caught.value)
+
+
+# -- where a firing lands ----------------------------------------------------
+
+
+async def test_a_new_thread_task_posts_at_top_level_in_its_own_channel(store: Store) -> None:
+    """`here` is a shape, not a place: the same channel and the same scope as
+    the thread it was created in, with no thread to reply into — which on Slack
+    is what starts one."""
+    task = await a_task(store, scope="channel:C0123", destination=HERE)
+    fire_at = task.next_fires(1, now=NOW)[0]
+
+    await task_handler(store)(a_job(task, fire_at))
+
+    (event,) = await events(store)
+    assert event.channel == "C0123"
+    assert event.reply_to is None
+    assert event.scope == "channel:C0123"
+    # Its own conversation, derived from the fire time so a retry rejoins it
+    # rather than opening a second one.
+    assert event.session_id == f"slack:{occurrence_id(task.id, fire_at)}"
+    assert event.session_id != task.session_id
+
+
+async def test_a_configured_destination_is_resolved_from_config_at_fire_time(
+    store: Store,
+) -> None:
+    """The row holds `ai-news`; only `[tasks.destinations]` knows what that is,
+    and it is asked on the run rather than at creation — so where a schedule
+    posts is something the operator keeps holding."""
+    settings = TaskSettings(destinations={"ai-news": "C0AI"})
+    task = await Tasks(store, settings).create(
+        owner="U01",
+        surface="slack",
+        session_id="slack:T01:D0999:1756890000.123",
+        channel="D0999",
+        reply_to="1756890000.123",
+        scope="private:U01",
+        prompt="what happened in AI overnight",
+        cron=WEEKDAY_NINE,
+        destination="ai-news",
+        now=NOW,
+    )
+
+    await task_handler(store, settings)(a_job(task, task.next_fires(1, now=NOW)[0]))
+
+    (event,) = await events(store)
+    assert event.channel == "C0AI"
+    assert event.reply_to is None
+
+
+async def test_a_firing_carries_the_scope_of_where_it_lands_not_of_who_asked(
+    store: Store,
+) -> None:
+    """The whole security claim of a destination (§11.1). A task set up in a DM
+    and pointed at a channel by the operator must not take the DM's scope with
+    it — retrieval filters on this before it ranks, so a private scope arriving
+    in a public channel is the leak, not a symptom of one."""
+    settings = TaskSettings(destinations={"ai-news": "C0AI"})
+    task = await Tasks(store, settings).create(
+        owner="U01",
+        surface="slack",
+        session_id="slack:T01:D0999:1756890000.123",
+        channel="D0999",
+        reply_to="1756890000.123",
+        scope="private:U01",
+        prompt="what happened in AI overnight",
+        cron=WEEKDAY_NINE,
+        destination="ai-news",
+        now=NOW,
+    )
+
+    await task_handler(store, settings)(a_job(task, task.next_fires(1, now=NOW)[0]))
+
+    (event,) = await events(store)
+    assert event.scope == "channel:C0AI"
+    assert "private" not in event.scope
+
+
+async def test_the_creating_thread_is_still_where_its_owner_is_told(store: Store) -> None:
+    """`channel` and `reply_to` keep the role they had. A destination says
+    where the *answers* go; the notice that a schedule stopped working belongs
+    where the person who set it up will understand it."""
+    settings = TaskSettings(destinations={"ai-news": "C0AI"}, disable_after_failures=1)
+    task = await a_task(store, destination=HERE)
+    told: list[tuple[str, str]] = []
+
+    async def notify(paused: Task, text: str) -> None:
+        told.append((paused.channel or "", paused.reply_to or ""))
+
+    handler = task_handler(store, settings, inbox=Exploding(), notify=notify)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError):
+        await handler(a_job(task, task.next_fires(1, now=NOW)[0]))
+
+    assert told == [("C0123", "1756890000.123")]
+
+
+async def test_a_destination_that_stopped_being_configured_stops_the_task(
+    store: Store,
+) -> None:
+    """It does not fall back to the thread it was created in, and it does not
+    guess. The run fails like any other run that never reached the inbox, which
+    pauses the task and tells its owner — the one safe reading of "post this
+    somewhere I can no longer find"."""
+    settings = TaskSettings(destinations={"ai-news": "C0AI"}, disable_after_failures=1)
+    task = await Tasks(store, settings).create(
+        owner="U01",
+        surface="slack",
+        session_id="slack:T01:C0123:1756890000.123",
+        channel="C0123",
+        reply_to="1756890000.123",
+        prompt="what happened in AI overnight",
+        cron=WEEKDAY_NINE,
+        destination="ai-news",
+        now=NOW,
+    )
+    gone = TaskSettings(disable_after_failures=1)
+
+    with pytest.raises(TaskError):
+        await task_handler(store, gone)(a_job(task, task.next_fires(1, now=NOW)[0]))
+
+    assert not await events(store)
+    paused = await Tasks(store).get(task.id)
+    assert paused is not None
+    assert paused.state == PAUSED
+    assert "ai-news" in (paused.last_error or "")
 
 
 async def test_listing_is_narrowed_in_the_query_rather_than_afterwards(store: Store) -> None:

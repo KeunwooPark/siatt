@@ -23,16 +23,20 @@ The interesting claim in this module is how little it adds.
   the two queues' at-least-once semantics compose into at-most-one-answer
   without a new mechanism.
 
-The destination is never a parameter. `session_id`, `channel`, `reply_to` and
-`scope` are copied from the conversation that created the task and are fixed
-there (§11.1): a task inherits the visibility of the thread it was asked for
-in, so nothing arriving in a DM can arrange to be said in a public channel.
+A task may also answer somewhere other than the thread it was asked in, and
+the shape of that is the whole of `Delivery` below. What a row holds is a
+destination *name*, never a channel: `here` for the conversation it was created
+in, at top level so each firing starts its own thread, or a key in
+`[tasks.destinations]`, which is operator config and the only place a channel
+id exists. Nothing arriving in a conversation can name a channel that is not
+already that conversation (§7.1), and a firing runs under the visibility of
+where it lands rather than of who asked for it (§11.1).
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Self
@@ -40,7 +44,8 @@ from zoneinfo import ZoneInfo
 
 from ulid import ULID
 
-from siatt.config import TaskSettings
+from siatt.adapters.slack.events import scope_for
+from siatt.config import HERE, TaskSettings
 from siatt.core.events import InboundEvent
 from siatt.core.inbox import Inbox
 from siatt.errors import SiattError
@@ -93,6 +98,10 @@ class Task:
     timezone: str | None
     state: str
     fire_once: bool
+    #: Where each firing is answered, as a name: None is the thread it was
+    #: created in, `here` is that channel at top level, anything else is a key
+    #: in `[tasks.destinations]` that only config can resolve.
+    destination: str | None
     created_at: str
     last_run_at: str | None = None
     last_job_id: str | None = None
@@ -114,6 +123,7 @@ class Task:
             timezone=row["timezone"],
             state=str(row["state"]),
             fire_once=bool(row["fire_once"]),
+            destination=row["destination"],
             created_at=str(row["created_at"]),
             last_run_at=row["last_run_at"],
             last_job_id=row["last_job_id"],
@@ -144,6 +154,56 @@ class Task:
             fires.append(moment)
         return fires
 
+    def delivery(self, job_id: str, destinations: Mapping[str, str]) -> Delivery:
+        """Where this firing is answered, resolved for the run about to happen.
+
+        At fire time rather than at creation, and that is the point: the row
+        names a destination and only `[tasks.destinations]` can say what the
+        name means, so where a task posts is a thing the operator holds and
+        keeps holding. A name that is no longer configured resolves to nothing
+        and raises — the run fails, the task is paused after enough of them and
+        its owner is told, which is the one safe reading of "post this
+        somewhere I can no longer find".
+        """
+        if self.destination is None:
+            return Delivery(
+                session_id=self.session_id,
+                channel=self.channel,
+                reply_to=self.reply_to,
+                scope=self.scope,
+            )
+        if self.destination == HERE:
+            if not self.channel:
+                raise TaskError(
+                    f"task {self.id} posts in the channel it was created in, and it has none"
+                )
+            channel, scope = self.channel, self.scope
+        elif resolved := destinations.get(self.destination):
+            channel = resolved
+            # The destination's own scope, never the creator's. A task set up
+            # from a DM and pointed at a channel answers with what that channel
+            # may see and nothing else — the leak §11.1 exists to prevent is
+            # exactly the one where a private scope travels to a public place.
+            scope = scope_for(channel, self.owner, is_dm=False)
+        else:
+            raise TaskError(
+                f"task {self.id} posts to {self.destination!r}, which is not a destination in "
+                "this config; add it to [tasks.destinations] or cancel the task"
+            )
+        return Delivery(
+            # One firing, one conversation. Derived from the job id, which is
+            # derived from the fire time, so a retried run rejoins the same
+            # conversation instead of opening a second one beside it — and
+            # prefixed with the surface, because that is where everything else
+            # reads the surface from.
+            session_id=f"{self.surface}:{job_id}",
+            channel=channel,
+            # A message with no thread is a thread: this is what makes each
+            # firing its own post rather than another line in an old one.
+            reply_to=None,
+            scope=scope,
+        )
+
     @property
     def label(self) -> str:
         """How to name this schedule in a listing or a log line.
@@ -154,6 +214,22 @@ class Task:
         heard of is the listing where that has gone wrong.
         """
         return self.cron if self.timezone is None else f"{self.cron} ({self.timezone})"
+
+
+@dataclass(frozen=True, slots=True)
+class Delivery:
+    """Where one firing of a task is answered, and under whose visibility.
+
+    Everything a `Task` row is about is history and schedule; this is the part
+    the event carries. It exists as a type because the four fields have to be
+    decided together — a channel with the wrong scope beside it is the bug
+    §11.1 is about, and a scope with no channel is a task that says nothing.
+    """
+
+    session_id: str
+    channel: str | None
+    reply_to: str | None
+    scope: str
 
 
 class Tasks:
@@ -185,11 +261,14 @@ class Tasks:
         reply_to: str | None = None,
         scope: str = "workspace",
         fire_once: bool = False,
+        destination: str | None = None,
         now: datetime | None = None,
     ) -> Task:
         """Create a schedule, having checked it is one Siatt will honour."""
         if not prompt.strip():
             raise TaskError("a task needs something to do; the prompt is empty")
+        if destination is not None:
+            self._validate_destination(destination, surface=surface, channel=channel)
         schedule = self._validate(cron, timezone, now=now)
         if (held := await self._store.count_owner_tasks(owner)) >= self._settings.max_per_owner:
             raise TaskError(
@@ -209,11 +288,34 @@ class Tasks:
             cron=schedule.expression,
             timezone=timezone,
             fire_once=fire_once,
+            destination=destination,
         )
         created = await self.get(task_id)
         if created is None:  # pragma: no cover - the row was just written
             raise TaskError(f"task {task_id} vanished between writing and reading it")
         return created
+
+    def _validate_destination(self, destination: str, *, surface: str, channel: str | None) -> None:
+        """Refuse a destination now, rather than at nine tomorrow morning.
+
+        Checked here and resolved again at fire time, which is not a
+        duplicated check: this one is "is that a thing you can ask for", and
+        that one is "what does the name mean today". Only the second can change
+        after the task exists, and only the first can be got wrong by the
+        person setting it up.
+        """
+        if surface != "slack":
+            raise TaskError(f"a destination is a Slack channel, and this task runs on {surface!r}")
+        if destination == HERE:
+            if not channel:
+                raise TaskError("there is no channel here to post in")
+            return
+        if destination not in self._settings.destinations:
+            named = ", ".join(sorted(self._settings.destinations)) or "none are configured"
+            raise TaskError(
+                f"there is no destination named {destination!r} ({named}). "
+                "Destinations are channels the operator names in [tasks.destinations]."
+            )
 
     def _validate(self, cron: str, timezone: str | None, *, now: datetime | None) -> Cron:
         """Parse the expression, and refuse one that fires too often.
@@ -321,8 +423,9 @@ def task_handler(
     about: the enqueue, not the turn. A model that times out answering a
     standing task is an inbox failure with the inbox's own retries, and it is
     not what pauses a task. What pauses a task is the run never reaching the
-    inbox at all — a deleted session, a row that stopped parsing — which is the
-    failure that would otherwise repeat silently forever.
+    inbox at all — a deleted session, a row that stopped parsing, a destination
+    nobody configures any more — which is the failure that would otherwise
+    repeat silently forever.
     """
     tasks = Tasks(store, settings)
     queue = inbox or Inbox(store)
@@ -340,7 +443,7 @@ def task_handler(
             log.info("task %s is %s; skipping this run", task.id, task.state)
             return
         try:
-            await _deliver(queue, task, job)
+            await _deliver(queue, task, job, tasks.settings.destinations)
         except Exception as exc:
             # Once per occurrence, not once per attempt. The job retries on the
             # queue's own backoff, and counting each of those three tries as a
@@ -352,28 +455,33 @@ def task_handler(
         await store.record_task_run(task.id, job_id=job.id)
         if task.fire_once:
             await tasks.finish(task.id)
-        log.info("task %s queued a turn in %s", task.id, task.session_id)
+        log.info("task %s queued a turn in %s", task.id, task.destination or task.session_id)
 
     return run
 
 
-async def _deliver(queue: Inbox, task: Task, job: Job) -> None:
+async def _deliver(queue: Inbox, task: Task, job: Job, destinations: Mapping[str, str]) -> None:
     """Hand the task's prompt to the inbox as though somebody had said it.
 
     `external_id` is the job's id, which is the fire time. A job retried after
     a partial failure re-enqueues the same event id, and the inbox's UNIQUE
     constraint turns that into one answer rather than two.
+
+    The destination is resolved here, on the run, and an unresolvable one
+    raises before anything is queued: a firing that cannot say where it goes
+    must not go anywhere.
     """
+    where = task.delivery(job.id, destinations)
     await queue.enqueue(
         InboundEvent(
             source=task.surface,
             external_id=job.id,
-            session_id=task.session_id,
+            session_id=where.session_id,
             text=task.prompt,
-            scope=task.scope,
+            scope=where.scope,
             author=task.owner,
-            channel=task.channel,
-            reply_to=task.reply_to,
+            channel=where.channel,
+            reply_to=where.reply_to,
             origin="scheduled",
         )
     )
