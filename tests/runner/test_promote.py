@@ -15,6 +15,7 @@ from siatt.llm.registry import ModelRole, ProviderRegistry
 from siatt.llm.tokens import HeuristicTokenizer
 from siatt.llm.types import ChatRequest, ChatResponse, Delta, Message, Usage
 from siatt.memory.bootstrap import bootstrap
+from siatt.memory.consolidate import PLAN_TOKENS
 from siatt.memory.document import MemoryDoc
 from siatt.memory.gitcmd import GitRepo
 from siatt.memory.index import MemoryIndex
@@ -31,8 +32,8 @@ class Scripted:
     name = "scripted"
     model = "m"
 
-    def __init__(self, *replies: str | Exception) -> None:
-        self.replies: list[str | Exception] = list(replies)
+    def __init__(self, *replies: str | Exception | ChatResponse) -> None:
+        self.replies: list[str | Exception | ChatResponse] = list(replies)
         self.requests: list[ChatRequest] = []
 
     @property
@@ -44,6 +45,8 @@ class Scripted:
         reply = self.replies.pop(0) if self.replies else "[]"
         if isinstance(reply, Exception):
             raise reply
+        if isinstance(reply, ChatResponse):
+            return reply
         return ChatResponse(
             message=Message.assistant(reply),
             stop_reason="end_turn",
@@ -110,6 +113,20 @@ def creating(title: str, body: str, *, memory_type: str = "fact") -> str:
     """A plan that creates one memory. The id is the model's to supply."""
     doc = MemoryDoc.new(type=memory_type, title=title, body=body)  # type: ignore[arg-type]
     return json.dumps([{"type": "create", "memory": doc.model_dump(mode="json")}])
+
+
+def out_of_room(text: str = "") -> ChatResponse:
+    """A reply the model ran out of output budget to finish.
+
+    Empty by default, which is what a reasoning model returns when it spends
+    the whole budget thinking: the thinking is not text, so nothing arrives.
+    """
+    return ChatResponse(
+        message=Message.assistant(text),
+        stop_reason="max_tokens",
+        usage=Usage(output_tokens=PLAN_TOKENS),
+        model="m",
+    )
 
 
 def updating(memory_id: str, body: str) -> str:
@@ -371,6 +388,68 @@ async def test_a_reply_that_is_not_a_plan_leaves_the_corpus_alone(
     rows = await store.raw("SELECT state, attempts FROM observations WHERE id = ?", (observation,))
     assert rows[0]["state"] == "pending", "still there, to be tried again"
     assert rows[0]["attempts"] == 1
+
+
+async def test_a_reply_that_ran_out_of_room_is_retried_before_it_costs_a_retry(
+    clone: Path, store: Store
+) -> None:
+    """A model that ran out of budget did not disagree with us. Spending one of
+    three hourly attempts to discover that loses the facts to a number this job
+    chose, so the retry happens in the run that noticed, with more room."""
+    observation = await observe(store, "Priya Raman", "Priya Raman owns deploys.")
+    provider = Scripted(out_of_room(), creating("Priya Raman", "Owns deploys."))
+
+    result = await (await promoter_for(clone, store, provider)).run()
+
+    assert result.promoted == 1
+    budgets = [req.max_tokens for req in provider.requests]
+    assert budgets == [PLAN_TOKENS, PLAN_TOKENS * 2], "the second ask has twice the room"
+    rows = await store.raw("SELECT state, attempts FROM observations WHERE id = ?", (observation,))
+    assert rows[0]["state"] == "promoted"
+    assert rows[0]["attempts"] == 0, "nothing was spent on the model running out of room"
+
+
+async def test_a_reply_with_no_text_is_retried_too(clone: Path, store: Store) -> None:
+    """The same failure without the `max_tokens` flag: the reply is simply
+    empty, which `json.loads` describes as a problem at column 0."""
+    await observe(store, "Priya Raman", "Priya Raman owns deploys.")
+    provider = Scripted("", creating("Priya Raman", "Owns deploys."))
+
+    result = await (await promoter_for(clone, store, provider)).run()
+
+    assert result.promoted == 1
+    assert len(provider.requests) == 2
+
+
+async def test_a_group_that_never_gets_an_answer_says_so(clone: Path, store: Store) -> None:
+    """It is still bounded — two asks per run, and the attempt cap after that.
+    What it must not do is record the failure as a malformed plan, which is
+    what "not JSON: Expecting value: line 1 column 1 (char 0)" reads as."""
+    observation = await observe(store, "Priya Raman", "Priya Raman owns deploys.")
+    provider = Scripted(out_of_room(), out_of_room())
+
+    result = await (await promoter_for(clone, store, provider, max_attempts=1)).run()
+
+    assert result.promoted == 0
+    assert len(provider.requests) == 2, "twice per run, not once and not forever"
+    rows = await store.raw("SELECT state, reason FROM observations WHERE id = ?", (observation,))
+    assert rows[0]["state"] == "discarded"
+    reason = str(rows[0]["reason"])
+    assert "output budget" in reason and "not JSON" not in reason
+
+
+async def test_a_truncated_plan_is_refused_even_when_it_parses(clone: Path, store: Store) -> None:
+    """Half a plan is the corpus-in-an-intermediate-state the compiler exists to
+    prevent: the missing half is the half that says what else to change."""
+    await observe(store, "Priya Raman", "Priya Raman owns deploys.")
+    half = out_of_room(creating("Priya Raman", "Owns deploys."))
+    provider = Scripted(half, "[]")
+    before = GitRepo.at(clone).head()
+
+    result = await (await promoter_for(clone, store, provider)).run()
+
+    assert result.promoted == 0
+    assert GitRepo.at(clone).head() == before, "the half that parsed was not written"
 
 
 async def test_the_planner_is_given_no_tools(clone: Path, store: Store) -> None:

@@ -48,7 +48,13 @@ from typing import Any
 
 from siatt.config import MemorySettings, PromoteSettings
 from siatt.llm.registry import ModelRole, ProviderRegistry
-from siatt.memory.consolidate import ConsolidationInput, build_request, decode_plan
+from siatt.memory.consolidate import (
+    PLAN_TOKENS,
+    ConsolidationInput,
+    build_request,
+    decode_plan,
+    unanswered,
+)
 from siatt.memory.document import Frontmatter, MemoryDoc, is_visibility, new_memory_id
 from siatt.memory.ltm import ApplyResult, Change, CommitMeta, MemoryStore, MemoryStoreError, Write
 from siatt.memory.patch import (
@@ -73,6 +79,14 @@ JOB = "promote"
 #: to invent a ULID produces something that fails validation often enough to
 #: matter. Handing it valid ones costs nothing and removes the failure mode.
 SPARE_IDS = 2
+
+#: What the output budget is multiplied by when a reply comes back with no plan
+#: in it. A model that ran out of room is not a model that disagreed, and
+#: `max_attempts` is there to stop a group whose *content* cannot be planned —
+#: spending three runs, an hour apart, discovering that the budget was the
+#: problem loses the facts to a number this job chose. One retry at twice the
+#: room settles it inside the run that noticed, and still terminates (#225).
+RETRY_FACTOR = 2
 
 TASK = """Reconcile these candidate observations about one subject against what
 long-term memory already says.
@@ -246,7 +260,13 @@ class Promoter:
     # -- one group -----------------------------------------------------------
 
     async def _plan(self, group: Group) -> tuple[list[MemoryPatch], str | None]:
-        """The model's plan for one group, or why there is not one."""
+        """The model's plan for one group, or why there is not one.
+
+        Asked at most twice. A reply with no plan in it — truncated, or empty
+        because a reasoning model spent the budget thinking — is not an answer
+        to argue with, and the second ask has twice the room. A reply that *is*
+        a plan is decoded once; being wrong is what `max_attempts` is for.
+        """
         if not is_visibility(group.scope):
             # The scope came off a session row, so this is a bug upstream
             # rather than anything the model did. Writing the memory anyway
@@ -254,22 +274,27 @@ class Promoter:
             # later read of that file fails.
             return [], f"{group.scope!r} is not a visibility scope a memory may carry"
         competing = await self._competing(group)
-        request = build_request(
-            job=JOB,
-            task=TASK.format(
-                ids="\n".join(f"  {i}" for i in _fresh_ids(len(group.rows) + SPARE_IDS)),
-                now=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                scope=group.scope,
-                schema=render_schema_md(),
-            ),
-            content=ConsolidationInput(channel_messages=group.claims(), memory_files=competing),
+        task = TASK.format(
+            ids="\n".join(f"  {i}" for i in _fresh_ids(len(group.rows) + SPARE_IDS)),
+            now=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            scope=group.scope,
+            schema=render_schema_md(),
         )
-        response = await self._registry.complete(ModelRole.CHAT, request, tag="promote.plan")
-        try:
-            plan = decode_plan(response.text, job=JOB)
-        except PatchError as exc:
-            return [], str(exc)
-        return _normalize_plan(plan, group.scope), None
+        content = ConsolidationInput(channel_messages=group.claims(), memory_files=competing)
+
+        silence = ""
+        for budget in (PLAN_TOKENS, PLAN_TOKENS * RETRY_FACTOR):
+            request = build_request(job=JOB, task=task, content=content, max_tokens=budget)
+            response = await self._registry.complete(ModelRole.CHAT, request, tag="promote.plan")
+            silence = unanswered(response)
+            if not silence:
+                try:
+                    plan = decode_plan(response.text, job=JOB)
+                except PatchError as exc:
+                    return [], str(exc)
+                return _normalize_plan(plan, group.scope), None
+            log.warning("promote: %s, planning %r", silence, group.subject)
+        return [], silence
 
     async def _competing(self, group: Group) -> dict[str, str]:
         """The memories already in the corpus that this group is about.
