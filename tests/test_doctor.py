@@ -651,3 +651,64 @@ async def test_the_key_is_resolved_from_the_vault_as_well_as_the_environment(
 
     assert check.status is Status.OK
     assert check.detail == "brave via BRAVE_SEARCH_API_KEY"
+
+
+# -- #213: embeddings, and the corpus that cannot be searched without them ----
+
+
+def memories(clone: Path, *bodies: str) -> None:
+    for i, body in enumerate(bodies):
+        doc = MemoryDoc.new(type="fact", title=f"fact {i}", body=body)
+        path = clone / doc.suggested_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(doc.render())
+
+
+async def test_one_script_and_no_embedder_is_not_a_complaint(tmp_path: Path, clone: Path) -> None:
+    """Lexical retrieval really does remain active for a corpus asked in its own language."""
+    memories(clone, "Bob runs the rota.", "Deploys run nightly.")
+
+    report = await diagnose(config_for(tmp_path), github=github())
+
+    assert status_of(report, "embeddings") is Status.SKIP
+    assert report.ok
+
+
+async def test_a_corpus_split_across_scripts_warns_when_no_embedder_is_configured(
+    tmp_path: Path, clone: Path
+) -> None:
+    """#213: every check was green while the answer was unreachable."""
+    memories(clone, "The user's name is Keunwoo.", "사용자는 한국어를 선호한다.")
+
+    report = await diagnose(config_for(tmp_path), github=github())
+
+    check = next(c for c in report.checks if c.name == "embeddings")
+    assert check.status is Status.WARN
+    assert "1 memory(s) in a non-Latin script and 1 not" in check.detail
+    # A warning, not a failure: retrieval within each language still works.
+    assert report.ok
+
+
+async def test_an_embedder_settles_it_however_the_corpus_is_written(
+    tmp_path: Path, clone: Path
+) -> None:
+    pytest.importorskip("sqlite_vec")
+    memories(clone, "The user's name is Keunwoo.", "사용자는 한국어를 선호한다.")
+    cfg = config_for(tmp_path)
+    cfg.llm["embedding"] = cfg.llm["chat"].model_copy(update={"model": "embed-1"})
+
+    report = await diagnose(cfg, github=github())
+
+    assert status_of(report, "embeddings") is Status.OK
+
+
+async def test_an_archived_memory_does_not_raise_the_warning(tmp_path: Path, clone: Path) -> None:
+    """Archived memories are not retrievable, so they cannot be what went missing."""
+    memories(clone, "Bob runs the rota.")
+    archived = clone / "memory" / "archive" / "old.md"
+    archived.parent.mkdir(parents=True, exist_ok=True)
+    archived.write_text(MemoryDoc.new(type="fact", title="옛날", body="옛 기록.").render())
+
+    report = await diagnose(config_for(tmp_path), github=github())
+
+    assert status_of(report, "embeddings") is Status.SKIP

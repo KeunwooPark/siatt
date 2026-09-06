@@ -13,6 +13,7 @@ import contextlib
 import importlib.util
 import logging
 import os
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -24,6 +25,7 @@ from siatt.memory.bootstrap import is_bootstrapped
 from siatt.memory.document import MemoryError_
 from siatt.memory.gitcmd import GitRepo, git_available
 from siatt.memory.index import MemoryIndex
+from siatt.memory.layout import ARCHIVE_DIR, MEMORY_DIR, is_memory_path
 from siatt.memory.lease import LEASE_NAME, LOCK_FILENAME, stale_lease
 from siatt.memory.manifest import Manifest
 from siatt.store import Store
@@ -482,11 +484,62 @@ def _slack(cfg: Config) -> list[Check]:
     return [Check("slack", Status.OK, f"socket mode; {where}")]
 
 
+#: Scripts that share no token with Latin, so that a question in one and a
+#: memory in the other cannot meet in a lexical index however it is tokenized.
+#: Greek, Cyrillic, Hebrew, Arabic, Devanagari, Thai, kana, Han and Hangul.
+_NON_LATIN = re.compile("[Ͱ-ϿЀ-ӿ֐-׿؀-ۿऀ-ॿ฀-๿぀-ヿ㐀-䶿一-鿿가-힯]")
+
+
+def _script_split(root: Path) -> tuple[int, int]:
+    """How many live memories use a non-Latin script, and how many do not.
+
+    Archived memories are left out: they are not retrievable, so they cannot be
+    the thing somebody fails to recall.
+    """
+    non_latin = latin = 0
+    for path in sorted(root.joinpath(MEMORY_DIR).rglob("*.md")):
+        relative = path.relative_to(root)
+        if not is_memory_path(relative) or relative.is_relative_to(ARCHIVE_DIR):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if _NON_LATIN.search(text):
+            non_latin += 1
+        else:
+            latin += 1
+    return non_latin, latin
+
+
+def _without_embeddings(cfg: Config) -> Check:
+    """`skip` for a corpus in one script, `warn` for one that straddles two.
+
+    "lexical retrieval remains active" is the whole story only while every
+    memory is written the way questions are asked. Once a corpus is part
+    Korean and part English, retrieval is not degraded across that split, it is
+    unable to cross it — there is no token shared between `내 이름이 뭐야?` and
+    `The user's name is Keunwoo` for any tokenizer to find. Embeddings are the
+    only thing here that bridges it, and reporting their absence as routine is
+    what let #213 look healthy while the answer was unreachable.
+    """
+    root = cfg.ltm.resolved_clone_path()
+    non_latin, latin = _script_split(root) if is_bootstrapped(root) else (0, 0)
+    if not (non_latin and latin):
+        return Check("embeddings", Status.SKIP, "not configured; lexical retrieval remains active")
+    return Check(
+        "embeddings",
+        Status.WARN,
+        f"not configured, and memory is split across scripts — {non_latin} "
+        f"memory(s) in a non-Latin script and {latin} not. Lexical retrieval "
+        "cannot match a question against a memory in another language; "
+        "configure a multilingual [llm.embedding] model and run `siatt reindex`",
+    )
+
+
 def _embeddings(cfg: Config) -> list[Check]:
     if "embedding" not in cfg.llm:
-        return [
-            Check("embeddings", Status.SKIP, "not configured; lexical retrieval remains active")
-        ]
+        return [_without_embeddings(cfg)]
     if importlib.util.find_spec("sqlite_vec") is None:
         return [Check("embeddings", Status.FAIL, "install the 'embeddings' extra for sqlite-vec")]
     return [Check("embeddings", Status.OK, "sqlite-vec available; index rebuilds in background")]
