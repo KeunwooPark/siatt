@@ -462,6 +462,108 @@ async def test_the_planner_is_given_no_tools(clone: Path, store: Store) -> None:
     assert "SIATT_UNTRUSTED_" in provider.prompts[0]
 
 
+async def test_a_create_for_a_file_that_exists_is_asked_again_with_that_file(
+    clone: Path, store: Store
+) -> None:
+    """The most common mistake a planner makes, and the most recoverable one.
+    Retrieval did not offer the file, so as far as the plan could tell nothing
+    had been written about the subject. Showing it the file is the answer."""
+    seeded = MemoryDoc.new(type="fact", title="Boram", body="Boram reviews the rota.")
+    write_memory(clone, seeded, path="memory/people/boram.md")
+    observation = await observe(store, "Priya Raman", "Priya Raman owns deploys.")
+    colliding = json.dumps(
+        [
+            {
+                "type": "create",
+                "memory": MemoryDoc.new(type="fact", title="Boram", body="new").model_dump(
+                    mode="json"
+                ),
+                "path": "memory/people/boram.md",
+            }
+        ]
+    )
+    provider = Scripted(colliding, updating(seeded.id, "Boram reviews the rota, and deploys."))
+
+    result = await (await promoter_for(clone, store, provider)).run()
+
+    assert result.promoted == 1
+    assert len(provider.requests) == 2
+    assert "reviews the rota" not in provider.prompts[0], "it was never shown the file"
+    assert "reviews the rota" in provider.prompts[1], "and now it has been"
+    assert "and deploys" in (clone / "memory/people/boram.md").read_text()
+    rows = await store.raw("SELECT state, attempts FROM observations WHERE id = ?", (observation,))
+    assert rows[0]["state"] == "promoted"
+
+
+async def test_a_plan_that_collides_twice_is_deferred_not_asked_forever(
+    clone: Path, store: Store
+) -> None:
+    """Two plans per group per run. A model that proposes the same create after
+    being shown the file is wrong in a way another ask will not fix."""
+    write_memory(
+        clone,
+        MemoryDoc.new(type="fact", title="Boram", body="Boram reviews the rota."),
+        path="memory/people/boram.md",
+    )
+    observation = await observe(store, "Priya Raman", "Priya Raman owns deploys.")
+    colliding = json.dumps(
+        [
+            {
+                "type": "create",
+                "memory": MemoryDoc.new(type="fact", title="Boram", body="new").model_dump(
+                    mode="json"
+                ),
+                "path": "memory/people/boram.md",
+            }
+        ]
+    )
+    provider = Scripted(colliding, colliding)
+    before = GitRepo.at(clone).head()
+
+    result = await (await promoter_for(clone, store, provider)).run()
+
+    assert result.promoted == 0
+    assert len(provider.requests) == 2
+    assert GitRepo.at(clone).head() == before
+    rows = await store.raw("SELECT state, attempts FROM observations WHERE id = ?", (observation,))
+    assert rows[0]["state"] == "pending"
+    assert rows[0]["attempts"] == 1
+
+
+async def test_a_colliding_memory_from_another_scope_is_never_shown(
+    clone: Path, store: Store
+) -> None:
+    """A file sitting at the path the plan wanted is not thereby a file this
+    group's audience may read."""
+    write_memory(
+        clone,
+        MemoryDoc.new(
+            type="fact", title="Boram", body="Boram is job-hunting.", visibility="private:U1"
+        ),
+        path="memory/people/boram.md",
+    )
+    await observe(store, "Priya Raman", "Priya Raman owns deploys.", scope="workspace")
+    provider = Scripted(
+        json.dumps(
+            [
+                {
+                    "type": "create",
+                    "memory": MemoryDoc.new(type="fact", title="Boram", body="new").model_dump(
+                        mode="json"
+                    ),
+                    "path": "memory/people/boram.md",
+                }
+            ]
+        )
+    )
+
+    result = await (await promoter_for(clone, store, provider)).run()
+
+    assert result.promoted == 0
+    assert len(provider.requests) == 1, "there was nothing it was allowed to be shown"
+    assert all("job-hunting" not in prompt for prompt in provider.prompts)
+
+
 async def test_two_subjects_that_want_one_path_do_not_silently_overwrite(
     clone: Path, store: Store
 ) -> None:

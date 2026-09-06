@@ -41,7 +41,7 @@ which is why the competition step is not only about quality.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -55,14 +55,22 @@ from siatt.memory.consolidate import (
     decode_plan,
     unanswered,
 )
-from siatt.memory.document import Frontmatter, MemoryDoc, is_visibility, new_memory_id
+from siatt.memory.document import (
+    Frontmatter,
+    MemoryDoc,
+    MemoryError_,
+    is_visibility,
+    new_memory_id,
+)
 from siatt.memory.ltm import ApplyResult, Change, CommitMeta, MemoryStore, MemoryStoreError, Write
+from siatt.memory.manifest import Manifest
 from siatt.memory.patch import (
     Create,
     MemoryPatch,
     Merge,
     PatchCompiler,
     PatchError,
+    Rejection,
     Supersede,
     Update,
 )
@@ -87,6 +95,13 @@ SPARE_IDS = 2
 #: problem loses the facts to a number this job chose. One retry at twice the
 #: room settles it inside the run that noticed, and still terminates (#225).
 RETRY_FACTOR = 2
+
+#: Plans one group may cost in a single run. The second ask is for the case
+#: where the first plan collided with a memory retrieval did not offer as
+#: competition: the model is shown the file and asked again, rather than the
+#: whole plan — including the patches that were fine — being thrown away and
+#: the observations behind it discarded a few runs later (#226).
+_ASKS_PER_GROUP = 2
 
 TASK = """Reconcile these candidate observations about one subject against what
 long-term memory already says.
@@ -222,19 +237,12 @@ class Promoter:
         touched_ids: list[str] = []
 
         for group in groups:
-            plan, problem = await self._plan(group)
+            plan, compiled, problem = await self._propose(group, manifest)
             if problem is not None:
                 deferred.append((group, problem))
                 continue
             if not plan:
                 discarded.append((group, "the corpus already says this; no change was proposed"))
-                continue
-
-            compiler = PatchCompiler(self._memory.path, manifest, policy=self._policy)
-            try:
-                compiled = compiler.compile(plan, job=JOB)
-            except PatchError as exc:
-                deferred.append((group, str(exc)))
                 continue
 
             # Each group compiles against the corpus as it stands, not against
@@ -259,7 +267,81 @@ class Promoter:
 
     # -- one group -----------------------------------------------------------
 
-    async def _plan(self, group: Group) -> tuple[list[MemoryPatch], str | None]:
+    async def _propose(
+        self, group: Group, manifest: Manifest
+    ) -> tuple[list[MemoryPatch], list[Change], str | None]:
+        """One group's plan and the writes it means, or why there are neither.
+
+        Planned twice when the first plan collides with a memory the model was
+        never shown. A `create` for a file the corpus already has is usually
+        not the model being wrong about the corpus — it is the model answering
+        the question it was asked, because retrieval did not offer that file as
+        competition and so, as far as the plan could tell, nothing had been
+        written about the subject.
+
+        Handing it the file and asking again is the fix. Compiling the `create`
+        as an update is not: the body it wrote does not know what is in the
+        file, so writing it over the top would delete whatever the model was
+        not shown — including, under `people/`, the block `identity` owns.
+        """
+        extra: dict[str, str] = {}
+        problem: str | None = None
+        for _ in range(_ASKS_PER_GROUP):
+            plan, problem = await self._plan(group, extra=extra)
+            if problem is not None or not plan:
+                return [], [], problem
+            compiler = PatchCompiler(self._memory.path, manifest, policy=self._policy)
+            try:
+                return plan, compiler.compile(plan, job=JOB), None
+            except PatchError as exc:
+                problem = str(exc)
+                unshown = self._collided(exc.rejections, group, shown=extra)
+                if not unshown:
+                    break
+                log.info(
+                    "promote: re-planning %r with %s, which it was not shown",
+                    group.subject,
+                    ", ".join(sorted(unshown)),
+                )
+                extra.update(unshown)
+        return [], [], problem
+
+    def _collided(
+        self, rejections: Sequence[Rejection], group: Group, *, shown: Mapping[str, str]
+    ) -> dict[str, str]:
+        """The memories a plan collided with, as competition for the next ask.
+
+        Scoped to the group exactly as `_competing` is. A file sitting at the
+        path the plan wanted is not thereby a file this group's audience may
+        read, and "the model needs to see it" is not a reason to put a private
+        memory in front of a workspace prompt. It is read from disk rather than
+        trusted to the manifest, because visibility is a property of the
+        document and a manifest can be stale.
+        """
+        files: dict[str, str] = {}
+        for path in sorted({r.conflict for r in rejections if r.conflict} - set(shown)):
+            content = self._offerable(path)
+            if content is None:
+                continue
+            try:
+                doc = MemoryDoc.parse(content, source=path)
+            except MemoryError_ as exc:
+                log.warning("promote: %s is in the way and does not parse: %s", path, exc)
+                continue
+            if doc.frontmatter.visibility != group.scope:
+                log.warning(
+                    "promote: %s is in the way of a %r group and is %r, so it was not shown",
+                    path,
+                    group.scope,
+                    doc.frontmatter.visibility,
+                )
+                continue
+            files[path] = content
+        return files
+
+    async def _plan(
+        self, group: Group, *, extra: Mapping[str, str] | None = None
+    ) -> tuple[list[MemoryPatch], str | None]:
         """The model's plan for one group, or why there is not one.
 
         Asked at most twice. A reply with no plan in it — truncated, or empty
@@ -273,7 +355,7 @@ class Promoter:
             # would put an unparseable `visibility` in the corpus, and every
             # later read of that file fails.
             return [], f"{group.scope!r} is not a visibility scope a memory may carry"
-        competing = await self._competing(group)
+        competing = await self._competing(group) | dict(extra or {})
         task = TASK.format(
             ids="\n".join(f"  {i}" for i in _fresh_ids(len(group.rows) + SPARE_IDS)),
             now=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -318,24 +400,36 @@ class Promoter:
             entry = manifest.resolve(memory_id)
             if entry is None or entry.path in files:
                 continue
-            try:
-                content = self._memory.read(entry.path)
-            except MemoryStoreError as exc:
-                log.warning("promote: could not read competing memory %s: %s", entry.path, exc)
-                continue
-            if len(content) > self._settings.max_memory_chars:
-                # Skipped, not truncated. See `PromoteSettings.max_memory_chars`.
-                log.warning(
-                    "promote: %s is %d chars and was not offered as competition; "
-                    "reorganize should be splitting it",
-                    entry.path,
-                    len(content),
-                )
+            content = self._offerable(entry.path)
+            if content is None:
                 continue
             files[entry.path] = content
             if len(files) >= self._settings.competing_memories:
                 break
         return files
+
+    def _offerable(self, path: str) -> str | None:
+        """A memory's text, or `None` if it may not go in a plan prompt.
+
+        One rule for every route a file takes into one, so that a document too
+        large to reconcile is too large whether retrieval found it or a
+        collision did.
+        """
+        try:
+            content = self._memory.read(path)
+        except MemoryStoreError as exc:
+            log.warning("promote: could not read competing memory %s: %s", path, exc)
+            return None
+        if len(content) > self._settings.max_memory_chars:
+            # Skipped, not truncated. See `PromoteSettings.max_memory_chars`.
+            log.warning(
+                "promote: %s is %d chars and was not offered as competition; "
+                "reorganize should be splitting it",
+                path,
+                len(content),
+            )
+            return None
+        return content
 
     # -- the commit, and the bookkeeping -------------------------------------
 
