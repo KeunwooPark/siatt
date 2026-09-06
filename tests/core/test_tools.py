@@ -8,11 +8,13 @@ correct. The alternative — letting it propagate — strands an assistant
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import pytest
 
 from siatt.core.tools import Tool, ToolContext, ToolRegistry, builtin_tools
+from siatt.errors import FetchError
 from siatt.llm.types import ToolUseBlock
 
 SCHEMA: dict[str, Any] = {
@@ -154,3 +156,36 @@ async def test_missing_vault_reference_is_a_tool_error() -> None:
     result = await reg.dispatch(use("weather", city="{{vault:missing}}"))
     assert result.is_error
     assert "does not exist" in result.content
+
+
+async def test_a_deliberate_failure_is_logged_without_a_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A site that answered 500 is not a fault in this daemon, and a stack
+    trace for one is how the log stops being somewhere a real fault shows."""
+
+    async def refuse(args: dict[str, Any], context: ToolContext) -> str:
+        raise FetchError("example.com is failing on its own end (HTTP 500).")
+
+    registry = ToolRegistry([Tool("fetch", "d", SCHEMA, refuse)])
+    with caplog.at_level(logging.WARNING, logger="siatt.core.tools"):
+        result = await registry.dispatch(ToolUseBlock(id="1", name="fetch", input={"city": "x"}))
+
+    assert result.is_error
+    assert "HTTP 500" in result.content
+    record = caplog.records[-1]
+    assert record.levelno == logging.WARNING
+    assert record.exc_info is None
+
+
+async def test_an_unexpected_failure_still_gets_its_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    registry = ToolRegistry([Tool("boom", "d", SCHEMA, explode)])
+    with caplog.at_level(logging.WARNING, logger="siatt.core.tools"):
+        result = await registry.dispatch(ToolUseBlock(id="1", name="boom", input={"city": "x"}))
+
+    assert result.is_error
+    record = caplog.records[-1]
+    assert record.levelno == logging.ERROR
+    assert record.exc_info is not None

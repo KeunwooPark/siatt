@@ -4,6 +4,10 @@ Dispatch never raises into the agent loop. A bad argument, an unknown tool, or a
 handler that blows up all come back as a `tool_result` marked `is_error`, so the
 model sees the failure and can correct it. Killing the turn instead would strand
 an assistant `tool_use` with no matching result, which is unrecoverable state.
+
+It does distinguish them in the log, though. A `SiattError` is a failure this
+codebase chose to describe — a site that answered 500, a URL the guard refused
+— and it gets one line. Anything else is a bug here and gets a traceback.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from typing import Any
 
 import jsonschema
 
+from siatt.errors import SiattError
 from siatt.llm.types import ToolDef, ToolResultBlock, ToolUseBlock
 
 log = logging.getLogger(__name__)
@@ -130,7 +135,16 @@ class ToolRegistry:
         except asyncio.CancelledError:
             # The turn is being aborted; the loop persists its own error result.
             raise
+        except SiattError as exc:
+            # Raised on purpose, with a message written for the model to read
+            # and work around: a site that answered 500, a URL the guard
+            # refused, a search with no provider configured. None of them is a
+            # fault in this daemon, and a stack trace for each one is how the
+            # log stops being somewhere a real fault can be noticed.
+            log.warning("tool %s failed: %s", use.name, exc)
+            return self._error(use, f"{type(exc).__name__}: {exc}")
         except Exception as exc:
+            # Anything else is a bug here, and a bug wants its traceback.
             log.exception("tool %s failed", use.name)
             # The message can quote whatever the handler was holding, a token in
             # a URL included, so it is scrubbed like any other result.
