@@ -65,6 +65,14 @@ class Rejection:
     reason: str
     #: Index into the plan, or None for a whole-plan rule such as the file cap.
     index: int | None = None
+    #: The memory this patch collided with, when it collided with one: the
+    #: path of a file the plan wanted to create and the corpus already has.
+    #:
+    #: Set so that a caller which can do something about it does not have to
+    #: read `reason` back out of a sentence. `promote` re-plans with that file
+    #: in front of the model, on the grounds that a `create` for something the
+    #: corpus already covers is usually a model that was never shown it.
+    conflict: str | None = None
 
     def __str__(self) -> str:
         where = f"patch {self.index}" if self.index is not None else "plan"
@@ -221,11 +229,19 @@ class PatchCompiler:
     def _create(self, patch: Create, index: int, projected: Manifest) -> list[Change]:
         doc = patch.memory
         if doc.id in projected:
-            raise PatchError([Rejection(f"{doc.id} already exists; use update", index)])
+            raise PatchError(
+                [
+                    Rejection(
+                        f"{doc.id} already exists; use update",
+                        index,
+                        conflict=projected.path_of(doc.id),
+                    )
+                ]
+            )
         path = patch.path or doc.suggested_path()
         self._require_writable(path, index)
         if self._exists(path):
-            raise PatchError([Rejection(f"{path} already exists", index)])
+            raise PatchError([Rejection(f"{path} already exists", index, conflict=path)])
 
         stamped = doc.model_copy(update={"frontmatter": doc.frontmatter.touch()})
         self._require_size(stamped.render(), path, index)

@@ -389,6 +389,29 @@ def test_creating_an_id_that_already_exists_is_refused(corpus: Corpus) -> None:
         corpus.compiler().compile([Create(memory=doc, path="memory/facts/other.md")], job="promote")
 
 
+def test_a_collision_says_which_file_it_collided_with(corpus: Corpus) -> None:
+    """So a caller that can re-plan does not have to read the path back out of
+    an English sentence."""
+    corpus.add(MemoryDoc.new(type="fact", title="Boram"), path="memory/people/boram.md")
+    fresh = MemoryDoc.new(type="fact", title="Boram")
+
+    with pytest.raises(PatchError) as caught:
+        corpus.compiler().compile(
+            [Create(memory=fresh, path="memory/people/boram.md")], job="promote"
+        )
+
+    assert [r.conflict for r in caught.value.rejections] == ["memory/people/boram.md"]
+
+
+def test_a_collision_on_the_id_names_the_file_that_holds_it(corpus: Corpus) -> None:
+    doc = corpus.add(MemoryDoc.new(type="fact", title="X"))
+
+    with pytest.raises(PatchError) as caught:
+        corpus.compiler().compile([Create(memory=doc, path="memory/facts/other.md")], job="promote")
+
+    assert [r.conflict for r in caught.value.rejections] == [doc.suggested_path()]
+
+
 def test_merging_a_memory_into_itself_is_refused(corpus: Corpus) -> None:
     doc = corpus.add(MemoryDoc.new(type="topic", title="X"))
     with pytest.raises(PatchError, match="into itself"):
