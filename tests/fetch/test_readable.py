@@ -107,3 +107,31 @@ def test_the_cut_falls_back_to_the_hard_limit_when_there_is_no_line() -> None:
 
     assert truncated
     assert text.startswith("x" * 50)
+
+
+def test_a_form_is_a_container_and_its_contents_are_read() -> None:
+    """ASP.NET wraps the whole body in one `<form runat="server">`. Silencing
+    forms silenced those pages entirely, and the model was told the URL had
+    nothing readable on it."""
+    html = """
+    <html><head><title>Notice</title></head><body>
+      <form name="aspnetForm" method="post" action="./default.aspx" id="aspnetForm">
+        <h1>Board</h1>
+        <p>The entire page lives inside the form.</p>
+      </form>
+    </body></html>
+    """
+
+    assert text_of(html) == "Board\n\nThe entire page lives inside the form."
+
+
+def test_a_dropdown_is_not_two_hundred_lines_of_reading_matter() -> None:
+    """What silencing forms was reaching for. A closed `<select>` shows one
+    line; its options are not text a reader saw."""
+    html = (
+        "<form><p>Country</p>"
+        '<select name="c"><option>Afghanistan</option><option>Albania</option></select>'
+        "<p>Search</p></form>"
+    )
+
+    assert text_of(html) == "Country\n\nSearch"

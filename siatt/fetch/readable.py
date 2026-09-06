@@ -24,6 +24,15 @@ from html.parser import HTMLParser
 #: `head` is not among them, because `<title>` is in it and the title is often
 #: the most useful line on the page. Nothing else in a head carries text: the
 #: two that do, `script` and `style`, are silenced by name.
+#:
+#: `form` is not among them either, and used to be. A form is a container, not
+#: a kind of content, and silencing a container silences whatever somebody put
+#: inside it — which on an ASP.NET WebForms page is the whole body, since the
+#: framework wraps `<body>` in one `<form runat="server">`. Such a page came
+#: back with no text in it, and a page with no text in it is refused, so the
+#: model was told the URL had nothing readable on it when it had a whole
+#: article. What was actually unwanted is `select`: a closed dropdown shows one
+#: line, and a reader never sees the other two hundred country names.
 SILENT = frozenset(
     {
         "script",
@@ -35,7 +44,7 @@ SILENT = frozenset(
         "iframe",
         "object",
         "canvas",
-        "form",
+        "select",
     }
 )
 
@@ -44,8 +53,8 @@ SILENT = frozenset(
 BLOCK = frozenset(
     {
         "address", "article", "aside", "blockquote", "br", "dd", "div", "dl",
-        "dt", "fieldset", "figcaption", "figure", "footer", "h1", "h2", "h3",
-        "h4", "h5", "h6", "header", "hr", "li", "main", "nav", "ol", "p",
+        "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2",
+        "h3", "h4", "h5", "h6", "header", "hr", "li", "main", "nav", "ol", "p",
         "pre", "section", "table", "tbody", "td", "tfoot", "th", "thead",
         "tr", "ul",
     }
