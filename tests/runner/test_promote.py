@@ -137,6 +137,23 @@ def files_under(clone: Path, directory: str) -> list[str]:
     return sorted(p.name for p in (clone / "memory" / directory).glob("*.md"))
 
 
+def files_with_id(clone: Path, memory_id: str) -> list[str]:
+    """Every file in the repo whose frontmatter claims `memory_id`.
+
+    Read off disk rather than from the manifest: a manifest maps an id to one
+    path, so it is the one structure that cannot show you a duplicate.
+    """
+    found = []
+    for path in sorted((clone / "memory").rglob("*.md")):
+        try:
+            doc = MemoryDoc.parse(path.read_text(), source=str(path))
+        except Exception:
+            continue
+        if doc.id == memory_id:
+            found.append(path.relative_to(clone).as_posix())
+    return found
+
+
 # -- the ordinary path -------------------------------------------------------
 
 
@@ -601,6 +618,62 @@ async def test_two_subjects_that_want_one_path_do_not_silently_overwrite(
     assert result.promoted == 1
     assert result.deferred == 1
     assert (clone / "memory/facts/collide.md").read_text().endswith("one\n")
+
+
+async def test_an_archive_in_one_group_and_an_update_in_another_leave_one_file(
+    clone: Path, store: Store
+) -> None:
+    """`8f5911a`: one group archived a memory while another updated it, both
+    landed in one commit, and the corpus ended up with two files carrying one
+    id — which does not index at all (#239).
+
+    The archive emits a write *and* a remove. Counting only the write left the
+    second group's `Write` to the removed path looking like no collision, and
+    it put back the file the remove had taken away.
+    """
+    doc = MemoryDoc.new(type="fact", title="Daily news summary", body="Every morning at 8.")
+    path = write_memory(clone, doc, path="memory/facts/news.md")
+    await observe(store, "News digest", "The digest was cancelled.")
+    await observe(store, "Morning routine", "The digest goes out at nine now.")
+    provider = Scripted(
+        json.dumps([{"type": "archive", "id": doc.id, "reason": "no longer sent"}]),
+        updating(doc.id, "Every morning at 9."),
+    )
+
+    result = await (await promoter_for(clone, store, provider)).run()
+
+    assert result.promoted == 1
+    assert result.deferred == 1
+    assert files_with_id(clone, doc.id) == ["memory/archive/daily-news-summary.md"]
+    assert path == "memory/facts/news.md"
+    assert not Manifest.rebuild(clone)[1], "the corpus rebuilds without problems"
+
+
+async def test_a_run_that_would_duplicate_an_id_commits_nothing(
+    clone: Path, store: Store, monkeypatch: pytest.MonkeyPatch, caplog: Any
+) -> None:
+    """The backstop, forced. Nothing upstream is supposed to let a change set
+    get this far, which is exactly why the behaviour when one does needs
+    stating: refuse the whole commit and defer, rather than write a corpus that
+    will not index.
+    """
+    await observe(store, "Priya Raman", "Priya Raman owns deploys.")
+    provider = Scripted(creating("Priya Raman", "Owns deploys."))
+    monkeypatch.setattr(
+        "siatt.runner.promote.collisions",
+        lambda manifest, changes: {"mem_01ABC": ["memory/facts/a.md", "memory/facts/b.md"]},
+    )
+    before = GitRepo.at(clone).head()
+
+    with caplog.at_level("ERROR"):
+        result = await (await promoter_for(clone, store, provider)).run()
+
+    assert result.promoted == 0
+    assert result.deferred == 1
+    assert GitRepo.at(clone).head() == before, "nothing was committed"
+    assert "refusing to commit" in caplog.text
+    rows = await store.raw("SELECT state FROM observations", ())
+    assert [r["state"] for r in rows] == ["pending"], "the observation waits for the next run"
 
 
 # -- the bookkeeping ---------------------------------------------------------

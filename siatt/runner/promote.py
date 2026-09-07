@@ -48,6 +48,7 @@ from typing import Any
 
 from siatt.config import MemorySettings, PromoteSettings
 from siatt.llm.registry import ModelRole, ProviderRegistry
+from siatt.memory.changeset import collisions
 from siatt.memory.consolidate import (
     PLAN_TOKENS,
     ConsolidationInput,
@@ -62,7 +63,7 @@ from siatt.memory.document import (
     is_visibility,
     new_memory_id,
 )
-from siatt.memory.ltm import ApplyResult, Change, CommitMeta, MemoryStore, MemoryStoreError, Write
+from siatt.memory.ltm import ApplyResult, Change, CommitMeta, MemoryStore, MemoryStoreError
 from siatt.memory.manifest import Manifest
 from siatt.memory.patch import (
     Create,
@@ -253,7 +254,14 @@ class Promoter:
             # with no error is not a thing to leave to chance. The loser waits
             # for the next run, by which point the winner is on disk and shows
             # up as competition.
-            paths = {c.path for c in compiled if isinstance(c, Write)}
+            #
+            # Every path the group touches, `Remove` included. An archive is a
+            # write *and* a remove of the file it moved out of, and counting
+            # only the write left a second group's `Write` to that same path
+            # looking like no collision at all: it put back the file the remove
+            # had taken away, and the corpus ended up with two files under one
+            # id, which does not index (#239).
+            paths = {c.path for c in compiled}
             if overlap := paths & claimed:
                 deferred.append((group, f"another subject in this run already writes {overlap}"))
                 continue
@@ -262,6 +270,25 @@ class Promoter:
             changes.extend(compiled)
             promoted.append(group)
             touched_ids.extend(_memory_ids(plan))
+
+        if broken := collisions(manifest, changes):
+            # Not expected to fire: `claimed` above is what stops this, and the
+            # groups are compiled one at a time, so no single plan reaches here
+            # holding two files for one memory either. It is a backstop, at the
+            # last moment the invariant is cheap to check and the commit has
+            # not happened yet, because the cost of being wrong is not one bad
+            # memory: a corpus with two files under one id does not index at
+            # all, so retrieval goes on quietly answering from a stale index
+            # until somebody runs `siatt doctor` (#239, #240).
+            log.error(
+                "promote: refusing to commit; %s would each live at two paths",
+                "; ".join(f"{k} at {', '.join(v)}" for k, v in broken.items()),
+            )
+            at_two = ", ".join(broken)
+            deferred.extend(
+                (group, f"the run would have left {at_two} at two paths") for group in promoted
+            )
+            changes, promoted, touched_ids = [], [], []
 
         result = await self._commit(changes, promoted, touched_ids)
         return await self._record(result, promoted, discarded, deferred, len(groups))

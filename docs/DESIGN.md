@@ -601,6 +601,24 @@ If links pointed at paths, every reorganization would break the corpus. Links
 resolve through `.siatt/manifest.json`, so a file can move freely and a merged
 memory's ID survives in the `supersedes` chain of its successor.
 
+**One id lives at one path.** The invariant everything downstream assumes and
+none of it can survive without. The manifest maps an id to a single path;
+retrieval resolves links through it; the index keys its chunks on
+`<memory id>:<ordinal>`. A second file carrying an id already in use has nowhere
+to go, so each of them breaks in its own way — `Manifest.rebuild` reports it as
+an unreadable file, and `reindex` used to die on a `UNIQUE constraint` and stop
+indexing the whole corpus. Nothing about that is visible in a conversation:
+retrieval goes on answering from the index it already had.
+
+So it is checked where it is cheap, before the commit rather than after.
+`siatt/memory/changeset.py` replays a compiled change list over the manifest and
+reports any id that would end up at two paths, and `promote` refuses the commit
+outright if one would — a run that duplicates an id costs a deferred group; a
+run that commits one costs the index. A `Manifest` cannot answer this question
+about itself, which is the reason the check is a separate walk: it holds one
+path per id, so projecting the same changes through it keeps the last write and
+the duplicate is gone from the very structure you would ask.
+
 ---
 
 ## 5. The git write path
