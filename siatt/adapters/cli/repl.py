@@ -9,10 +9,11 @@ indistinguishable in the database from one held in a channel.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from ulid import ULID
 
@@ -20,8 +21,15 @@ from siatt import __version__
 from siatt.core.agent import Agent, AgentResult
 from siatt.llm.types import Delta, TextDelta
 from siatt.memory.dates import local_zone
+from siatt.store.blobs import Attachment, AttachmentError
 
 PROMPT = "\n› "  # noqa: RUF001 - a prompt glyph, not punctuation
+
+#: What a terminal conversation may see. The default `respond` would apply
+#: anyway; it is written out because the file listing below has to read
+#: attachments under the same scope the turn ran under, and two places quietly
+#: agreeing on a default is how they stop agreeing.
+SCOPE = "workspace"
 
 HELP = """\
 [bold]Commands[/bold]
@@ -92,7 +100,12 @@ class Repl:
                 self.session_id,
                 text,
                 surface="cli",
+                scope=SCOPE,
                 on_delta=on_delta,
+                # A terminal can hand somebody a file: not by uploading it, but
+                # by saying where it already is (#249). So `send_file` resolves
+                # here rather than refusing, and `_sent` below is the delivery.
+                can_send_files=True,
                 # Whoever is at the terminal means their own yesterday, and
                 # there is no profile here to ask for it (#223).
                 tz=local_zone(),
@@ -106,11 +119,47 @@ class Repl:
 
         self.console.print()
         result = self.last_result
+        if result.attachments:
+            await self._sent(result.attachments)
         if (note := result.note) is not None:
             self.console.print(f"[yellow]…[/yellow] {note}")
         if result.tool_calls:
             self.console.print(
                 f"[dim]{result.tool_calls} tool call(s), {result.iterations} iteration(s)[/dim]"
+            )
+
+    async def _sent(self, sent: Sequence[Attachment]) -> None:
+        """Where the files this turn sent actually are.
+
+        The terminal's version of an upload, and the whole of it: the path is
+        clickable in most terminals and copyable in the rest, and nothing has to
+        be written twice.
+
+        Read under the session's scope like every other attachment read. A CLI
+        session is not a way around a scope, and the digest on the result is a
+        digest rather than a permission.
+
+        Escaped, because a filename came off somebody's upload and rich would
+        otherwise read `[dim]` in it as markup — the same reason the answer
+        itself is written raw.
+        """
+        files = self.agent.attachments
+        for held in sent:
+            name = escape(held.shown or "an untitled file")
+            described = f"{held.mime}, {held.size:,} bytes"
+            if files is None:
+                self.console.print(f"[cyan]sent[/cyan] {name} [dim]— {described}[/dim]")
+                continue
+            try:
+                where = await files.path(held.sha256, scope=SCOPE)
+            except AttachmentError as exc:
+                # Collected between the turn and now, or never visible from
+                # here. Either way there is no file to point at, and a path to
+                # one that is not there is worse than the sentence.
+                self.console.print(f"[yellow]![/yellow] {name} [dim]— {escape(str(exc))}[/dim]")
+                continue
+            self.console.print(
+                f"[cyan]sent[/cyan] {name} [dim]— {described} — {escape(str(where))}[/dim]"
             )
 
     async def _meta(self, line: str) -> bool:

@@ -1321,6 +1321,14 @@ The CLI adapter exists mainly so the agent loop can be developed and tested
 without Slack in the way. It shares the same `inbox` → session → agent path, so
 it is a real adapter, not a test harness.
 
+It can send a file too, and its way of sending one is to say where the file
+already is: the person asking and the process answering share a filesystem, so
+the blob's own path is the whole delivery. Writing a copy into their working
+directory would be a file they did not ask for, under a name a stranger chose —
+that belongs behind a flag if it is ever wanted, not in the default path. The
+path is read through `Attachments.path`, scoped like every other read, and a
+blob the collector has taken since prints the reason instead.
+
 ---
 
 ## 11. Security and privacy
