@@ -126,9 +126,17 @@ class Runtime:
         idle_after: float = IDLE_AFTER,
         prepare: EventPreparer | None = None,
         scrub: Scrubber | None = None,
+        sends_files: bool = False,
     ) -> None:
         self._agent = agent
         self._reply = reply
+        # Whether this surface's `Reply` can put a file in front of whoever
+        # asked. It belongs to the surface and travels with the turn because
+        # the tool that would send one has to know *before* it answers the
+        # model: an answer that says "here it is" where nothing can be sent is
+        # worse than a refusal. False by default, so a surface acquires the
+        # capability by wiring it up rather than by existing.
+        self._sends_files = sends_files
         self._prepare = prepare
         self._scrub = scrub or (lambda text: text)
         self._ephemeral_originals: dict[tuple[str, str], str] = {}
@@ -216,6 +224,7 @@ class Runtime:
                 # scope above, and a descriptor the fetch did not keep carries
                 # none and contributes nothing.
                 attachments=[a.sha256 for a in turn.event.attachments if a.sha256],
+                can_send_files=self._sends_files,
             )
         except BaseException:
             # Including cancellation, which is what a shutdown mid-turn is. A

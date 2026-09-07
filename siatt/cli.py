@@ -24,6 +24,7 @@ from siatt.adapters.cli import run_repl
 from siatt.config import BrowserSettings, Config, config_path, load_config
 from siatt.core.agent import Agent
 from siatt.core.context import ContextPacker
+from siatt.core.file_tools import file_tools
 from siatt.core.inbox import Inbox
 from siatt.core.memory_tools import memory_tools
 from siatt.core.schedule_tools import schedule_tools
@@ -1102,6 +1103,12 @@ async def _agent(cfg: Config, *, daemon: bool = False) -> AsyncIterator[Agent]:
                     store=store,
                     attachments=attachments,
                 )
+
+        if attachments is not None:
+            # Only with the store behind it. Without `[attachments]` there is
+            # nothing on disk to send, and a tool that can only refuse is a
+            # tool that teaches the model to try.
+            tools += file_tools(store=store, attachments=attachments)
 
         if daemon:
             # No repo and no model needed: a schedule is a row, and what fires

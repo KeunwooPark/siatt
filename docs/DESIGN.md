@@ -374,6 +374,32 @@ that may not, and that one stays a sentence. Bounded per turn rather than per
 call: a turn that opens four memories citing ten photographs each is what the
 bound is for, and past it the note names the file and says it was not shown.
 
+**Sending one back is the other direction, and the surface owns it.** Everything
+above is inbound: a file arrives, is kept, is looked at, is cited. `send_file` is
+the verb going the other way, and it is deliberately half a verb — it records
+*which* file goes out with the answer, on the turn's own notebook beside the
+pictures it surfaced, and the surface does the sending when the answer is
+delivered. Nothing is uploaded from inside a tool call, because an answer is not
+posted from inside one either.
+
+What may be sent is the conversation's own attachments plus whatever a
+`memory_read` put in front of the model *this turn* — the second is the case the
+feature is for ("send me the photo from that memory") and is safe on the check
+that already showed it. A digest from anywhere else resolves to nothing, on the
+argument `memory_write` makes: a model that has seen the shape of a handle will
+compose one, and a guessable twelve characters must not be a way to post a
+stranger's photograph into a channel. Bounded per turn, like everything else
+here.
+
+**A surface that cannot send files says so before the model commits to it.** The
+failure worth engineering against is not an unsent file, it is an answer that
+says *"here it is"* where nothing was sent — so the capability travels with the
+turn from the surface that opened it, and the tool reads it before it resolves
+anything. A surface acquires it by wiring it up; the default is mute. The digests
+on the notebook are resolved back through the store, under the session's scope,
+after the loop ends: what a tool wrote down is a digest, and a digest is not a
+permission.
+
 The reference is not trusted because a model wrote it. Consolidation reads
 memory files and writes memory files, so once one of these exists the model has
 seen the shape — and a model that has seen the shape will compose a plausible
@@ -932,6 +958,9 @@ So the agent also gets:
 - `memory_search(query, scope_hint, limit)` → ranked snippets with IDs
 - `memory_read(memory_id)` → the full file, plus what its attachments are and the images among them
 - `memory_write(kind, subject, claim, attachments)` → enqueue an observation (never a direct write)
+
+And, where the surface can carry one, `send_file(ids)` → the files that go back
+with this answer (§4.1.1).
 
 Do not pick one strategy. Injection handles the 90% case; tools handle the tail.
 Note that `memory_write` enqueues into `observations` — the agent proposes, the

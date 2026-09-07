@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -81,8 +82,9 @@ class ScriptedProvider:
                 yield TextDelta(text=block.text)
             elif isinstance(block, ToolUseBlock):
                 yield ToolUseStart(id=block.id, name=block.name)
-                # Split mid-key, as both real APIs do.
-                raw = f'{{"city": "{block.input.get("city", "")}"}}'
+                # The block's own arguments, so a scripted call can carry
+                # whatever its tool takes. Split mid-key, as both real APIs do.
+                raw = json.dumps(block.input or {"city": ""})
                 yield ToolUseArgsDelta(id=block.id, partial_json=raw[:6])
                 yield ToolUseArgsDelta(id=block.id, partial_json=raw[6:])
                 yield ToolUseStop(id=block.id)
