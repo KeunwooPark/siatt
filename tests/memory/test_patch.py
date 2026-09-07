@@ -50,11 +50,15 @@ class Corpus:
         target.write_text(doc.render())
         return doc
 
-    def compiler(self, **policy: int) -> PatchCompiler:
+    def compiler(self, *, blobs: frozenset[str] | None = None, **policy: int) -> PatchCompiler:
         manifest, problems = Manifest.rebuild(self.root)
         assert not problems, problems
         return PatchCompiler(
-            self.root, manifest, policy=MemorySettings(**policy) if policy else None, now=NOW
+            self.root,
+            manifest,
+            policy=MemorySettings(**policy) if policy else None,
+            now=NOW,
+            blobs=blobs,
         )
 
     def snapshot(self) -> dict[str, bytes]:
@@ -592,3 +596,80 @@ def test_a_salience_change_beside_another_field_still_counts_as_an_edit(
 
     written = MemoryDoc.parse(changes[0].content)  # type: ignore[union-attr]
     assert written.frontmatter.updated > LONG_AGO
+
+
+# -- attachment references ---------------------------------------------------
+
+
+REAL_BLOB = "a" * 64
+INVENTED_BLOB = "b" * 64
+
+
+def test_an_invented_attachment_reference_is_dropped(corpus: Corpus) -> None:
+    """Consolidation reads memory files and writes memory files, so a model that
+    has seen one of these will compose another — and sixty-four hex characters
+    it invented look exactly like sixty-four it did not. What must not survive
+    is a confident pointer, in a file somebody trusts, to evidence that is not
+    there."""
+    doc = MemoryDoc.new(
+        type="fact",
+        title="The whiteboard",
+        body=f"We agreed [{'a photo'}](siatt://blob/{INVENTED_BLOB}) to ship Friday.",
+    )
+
+    changes = corpus.compiler(blobs=frozenset({REAL_BLOB})).compile(
+        [Create(memory=doc)], job="promote"
+    )
+
+    written = next(c for c in changes if isinstance(c, Write) and c.path.endswith(".md"))
+    assert INVENTED_BLOB not in written.content
+    # The prose survives: the sentence is usually true even when the pointer is
+    # not, and rejecting the plan would throw away a memory worth keeping.
+    assert "We agreed a photo to ship Friday." in written.content
+
+
+def test_a_real_attachment_reference_survives(corpus: Corpus) -> None:
+    doc = MemoryDoc.new(
+        type="fact",
+        title="The whiteboard",
+        body=f"We agreed [shot.png](siatt://blob/{REAL_BLOB}) to ship Friday.",
+    )
+
+    changes = corpus.compiler(blobs=frozenset({REAL_BLOB})).compile(
+        [Create(memory=doc)], job="promote"
+    )
+
+    written = next(c for c in changes if isinstance(c, Write) and c.path.endswith(".md"))
+    assert f"siatt://blob/{REAL_BLOB}" in written.content
+
+
+def test_a_job_that_moves_files_leaves_references_alone(corpus: Corpus) -> None:
+    """`blobs=None` means "do not look". An empty set and a None would otherwise
+    be the same argument with opposite meanings, and the wrong one silently
+    strips real references out of memories nobody edited."""
+    doc = MemoryDoc.new(
+        type="fact",
+        title="The whiteboard",
+        body=f"We agreed [shot.png](siatt://blob/{REAL_BLOB}) to ship Friday.",
+    )
+
+    changes = corpus.compiler().compile([Create(memory=doc)], job="forget")
+
+    written = next(c for c in changes if isinstance(c, Write) and c.path.endswith(".md"))
+    assert f"siatt://blob/{REAL_BLOB}" in written.content
+
+
+def test_dropping_a_reference_does_not_reject_the_plan(corpus: Corpus) -> None:
+    """The link check runs after this and must not then see a broken link."""
+    doc = MemoryDoc.new(
+        type="fact",
+        title="Two things",
+        body=f"[a](siatt://blob/{INVENTED_BLOB}) and [b](siatt://blob/{REAL_BLOB}).",
+    )
+
+    changes = corpus.compiler(blobs=frozenset({REAL_BLOB})).compile(
+        [Create(memory=doc)], job="reflect"
+    )
+
+    written = next(c for c in changes if isinstance(c, Write) and c.path.endswith(".md"))
+    assert written.content.count("siatt://blob/") == 1

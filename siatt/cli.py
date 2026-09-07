@@ -1095,7 +1095,12 @@ async def _agent(cfg: Config, *, daemon: bool = False) -> AsyncIterator[Agent]:
                     embedder=registry.embed if embedding else None,
                     embedding_model=embedding.model if embedding else None,
                 )
-                tools += memory_tools(retriever=retriever, memory=memory, store=store)
+                tools += memory_tools(
+                    retriever=retriever,
+                    memory=memory,
+                    store=store,
+                    attachments=attachments,
+                )
 
         if daemon:
             # No repo and no model needed: a schedule is a row, and what fires

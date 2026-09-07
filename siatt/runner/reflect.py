@@ -478,7 +478,11 @@ class Reflector:
         night whose journal will not validate should still recompute salience,
         and a corpus with one unreadable file should still get its journal.
         """
-        changes = [*self._compile(journal, "journal"), *self._compile(salience, "salience")]
+        blobs = await self._store.attachment_hashes()
+        changes = [
+            *self._compile(journal, "journal", blobs),
+            *self._compile(salience, "salience", blobs),
+        ]
         if not changes:
             return ApplyResult()
         parts = []
@@ -491,10 +495,17 @@ class Reflector:
             CommitMeta(summary=f"reflect: {', '.join(parts)}", job=JOB, job_id=self._job_id),
         )
 
-    def _compile(self, patches: Sequence[MemoryPatch], what: str) -> list[Change]:
+    def _compile(
+        self, patches: Sequence[MemoryPatch], what: str, blobs: frozenset[str]
+    ) -> list[Change]:
         if not patches:
             return []
-        compiler = PatchCompiler(self._memory.path, self._memory.manifest(), policy=self._policy)
+        compiler = PatchCompiler(
+            self._memory.path,
+            self._memory.manifest(),
+            policy=self._policy,
+            blobs=blobs,
+        )
         try:
             return compiler.compile(patches, job=JOB)
         except PatchError as exc:

@@ -7,17 +7,21 @@ import httpx
 import pytest
 
 from siatt.config import (
+    AttachmentSettings,
     BrowserSettings,
     Config,
     FetchSettings,
     SearchSettings,
     SlackSettings,
+    StoreSettings,
     write_config,
 )
 from siatt.doctor import (
     Check,
     Report,
     Status,
+    _attachment_store,
+    _attachments,
     _browser,
     _fetch,
     _search,
@@ -712,3 +716,90 @@ async def test_an_archived_memory_does_not_raise_the_warning(tmp_path: Path, clo
     report = await diagnose(config_for(tmp_path), github=github())
 
     assert status_of(report, "embeddings") is Status.SKIP
+
+
+# -- attachments -------------------------------------------------------------
+
+
+async def test_attachments_are_skipped_when_the_install_keeps_none(tmp_path: Path) -> None:
+    cfg = Config()
+
+    assert _attachments(cfg).status is Status.SKIP
+
+
+async def test_attachments_reports_the_limits_and_the_scope(tmp_path: Path) -> None:
+    """A Slack app without `files:read` can be configured perfectly and still
+    fetch nothing but login pages. Saying it here is cheaper than saying it in
+    a thread."""
+    cfg = Config(attachments=AttachmentSettings(enabled=True))
+
+    check = _attachments(cfg)
+
+    assert check.status is Status.OK
+    assert "files:read" in check.detail
+    assert "image/" in check.detail
+
+
+async def test_a_row_with_no_file_is_a_failure(tmp_path: Path) -> None:
+    """The half of a torn delete that breaks a read: a reference promising
+    bytes that are not there."""
+    cfg = Config(
+        attachments=AttachmentSettings(enabled=True),
+        store=StoreSettings(path=str(tmp_path / "siatt.db")),
+    )
+    async with await Store.open(cfg.store.resolved()) as store:
+        files = cfg.attachments.build(store, cfg.store.resolved())
+        sha = await files.put(
+            b"\x89PNG\r\n\x1a\n" + b"x" * 40,
+            mime="image/png",
+            source_name="cli",
+            scope="workspace",
+        )
+        cfg.attachments.blobs(cfg.store.resolved()).path(sha).unlink()
+
+        check = await _attachment_store(cfg, store)
+
+    assert check is not None
+    assert check.status is Status.FAIL
+    assert "row(s) with no file" in check.detail
+
+
+async def test_a_file_with_no_row_is_a_warning(tmp_path: Path) -> None:
+    """Dead space: invisible to the sweep, which reads the table, and therefore
+    never reclaimed until somebody is told about it."""
+    cfg = Config(
+        attachments=AttachmentSettings(enabled=True),
+        store=StoreSettings(path=str(tmp_path / "siatt.db")),
+    )
+    async with await Store.open(cfg.store.resolved()) as store:
+        blobs = cfg.attachments.blobs(cfg.store.resolved())
+        orphan = blobs.path("c" * 64)
+        orphan.parent.mkdir(parents=True, exist_ok=True)
+        orphan.write_bytes(b"nobody knows about this")
+
+        check = await _attachment_store(cfg, store)
+
+    assert check is not None
+    assert check.status is Status.WARN
+    assert "file(s) with no row" in check.detail
+
+
+async def test_a_healthy_attachment_store_says_so(tmp_path: Path) -> None:
+    cfg = Config(
+        attachments=AttachmentSettings(enabled=True),
+        store=StoreSettings(path=str(tmp_path / "siatt.db")),
+    )
+    async with await Store.open(cfg.store.resolved()) as store:
+        files = cfg.attachments.build(store, cfg.store.resolved())
+        await files.put(
+            b"\x89PNG\r\n\x1a\n" + b"x" * 40,
+            mime="image/png",
+            source_name="cli",
+            scope="workspace",
+        )
+
+        check = await _attachment_store(cfg, store)
+
+    assert check is not None
+    assert check.status is Status.OK
+    assert "all present" in check.detail

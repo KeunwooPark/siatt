@@ -63,7 +63,12 @@ def memory(title: str, body: str = "Something.", **fields: Any) -> MemoryDoc:
 
 
 def collector_for(
-    clone: Path, store: Store, *, policy: MemorySettings | None = None, **settings: Any
+    clone: Path,
+    store: Store,
+    *,
+    policy: MemorySettings | None = None,
+    attachments: Any = None,
+    **settings: Any,
 ) -> Collector:
     return Collector(
         store,
@@ -71,6 +76,7 @@ def collector_for(
         settings=ForgetSettings(**settings),
         policy=policy,
         now=NOW,
+        attachments=attachments,
     )
 
 

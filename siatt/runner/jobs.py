@@ -262,7 +262,19 @@ def _forget(cfg: Config, store: Store) -> JobHandler:
     async def run(job: Job) -> None:
         memory = await MemoryStore.open(cfg, store)
         result = await Collector(
-            store, memory, settings=cfg.forget, policy=cfg.memory, job_id=job.id
+            store,
+            memory,
+            settings=cfg.forget,
+            policy=cfg.memory,
+            job_id=job.id,
+            # The only job that may delete stored attachments, because it is the
+            # only one that knows what the Markdown still references. None when
+            # the install keeps none, and then there is nothing to sweep.
+            attachments=(
+                cfg.attachments.build(store, cfg.store.resolved())
+                if cfg.attachments.enabled
+                else None
+            ),
         ).run()
         log.info("forget: %s", result.summary())
 

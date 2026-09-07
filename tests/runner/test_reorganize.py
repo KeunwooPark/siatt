@@ -449,3 +449,55 @@ async def test_the_corpus_travels_as_untrusted_data(clone: Path, store: Store) -
 
     assert "SIATT_UNTRUSTED_" in provider.prompts[0]
     assert provider.requests[0].tools == ()
+
+
+# -- attachment references ---------------------------------------------------
+
+
+async def test_an_attachment_reference_survives_a_librarian_pass(
+    clone: Path, store: Store, tmp_path: Path
+) -> None:
+    """The weekly pass rewrites files nobody asked it to touch. A memory's
+    pointer to a picture has to come out the other side."""
+    from siatt.config import AttachmentSettings
+    from siatt.memory.blobref import link
+
+    attachments = AttachmentSettings(enabled=True).build(store, tmp_path / "siatt.db")
+    sha = await attachments.put(
+        b"\x89PNG\r\n\x1a\n" + b"x" * 40,
+        mime="image/png",
+        source_name="slack",
+        scope="workspace",
+        name="shot.png",
+    )
+    doc = fact("The whiteboard", f"We agreed {link(sha, 'shot.png')} to ship Friday.")
+    path = write_memory(clone, doc)
+    other = fact("Unrelated", "Something else entirely.")
+    write_memory(clone, other)
+
+    await librarian_for(clone, store, Scripted()).run()
+
+    assert f"siatt://blob/{sha}" in (clone / path).read_text()
+
+
+async def test_a_reference_the_librarian_invents_is_dropped(
+    clone: Path, store: Store, tmp_path: Path
+) -> None:
+    """A model that has read one of these composes another. This is the pass
+    that reads the whole corpus, so it is the one most likely to."""
+    invented = "d" * 64
+    first = fact("Ship date", "We ship on Friday.")
+    second = fact("Ship day", "The ship day is Friday.")
+    write_memory(clone, first)
+    write_memory(clone, second)
+    merged = merging(
+        first.id,
+        [second.id],
+        f"We ship on Friday, per [the whiteboard](siatt://blob/{invented}).",
+    )
+
+    await librarian_for(clone, store, Scripted(merged)).run()
+
+    surviving = (clone / "memory/facts" / f"{first.suggested_path().split('/')[-1]}").read_text()
+    assert invented not in surviving
+    assert "per the whiteboard" in surviving

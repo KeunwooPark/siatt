@@ -186,6 +186,42 @@ def _fetch(cfg: Config) -> Check:
     )
 
 
+async def _attachment_store(cfg: Config, store: Store) -> Check | None:
+    """Both halves of a torn delete.
+
+    Collecting an attachment is a row and then a file, and a crash between them
+    leaves one of two shapes. A row with no file is the one that matters: every
+    reader has to handle a reference promising bytes that are not there. A file
+    with no row is dead space, invisible to the sweep — which reads the table —
+    and therefore never reclaimed until somebody is told about it.
+
+    Returns None when the install keeps no attachments, so the report does not
+    grow a line about a feature nobody turned on.
+    """
+    if not cfg.attachments.enabled:
+        return None
+    blobs = cfg.attachments.blobs(cfg.store.resolved())
+    known = await store.attachment_hashes()
+    on_disk = {
+        path.name for path in blobs.root.glob("*/*") if path.is_file() and len(path.name) == 64
+    }
+    missing = sorted(known - on_disk)
+    orphaned = sorted(on_disk - known)
+    if not missing and not orphaned:
+        return Check("attachment store", Status.OK, f"{len(known)} attachment(s), all present")
+    parts = []
+    if missing:
+        parts.append(f"{len(missing)} row(s) with no file ({_listed(missing)})")
+    if orphaned:
+        parts.append(f"{len(orphaned)} file(s) with no row ({_listed(orphaned)})")
+    return Check(
+        "attachment store",
+        # A row with no file breaks a read; a file with no row wastes a disk.
+        Status.FAIL if missing else Status.WARN,
+        ", ".join(parts),
+    )
+
+
 def _attachments(cfg: Config) -> Check:
     """Whether files people send are kept, where, and under what limits.
 
@@ -384,13 +420,15 @@ async def _store_checks(cfg: Config) -> list[Check]:
             rows = await store.raw("SELECT name FROM schema_version ORDER BY name")
             lease = await _lease(cfg, store)
             index = await _index(cfg, store)
+            blobs = await _attachment_store(cfg, store)
     except SiattError as exc:
         return [Check("database", Status.FAIL, f"{path}: {exc}")]
-    return [
+    checks = [
         Check("database", Status.OK, f"{path}, {len(rows)} migration(s) applied"),
         lease,
         index,
     ]
+    return [*checks, blobs] if blobs is not None else checks
 
 
 async def _index(cfg: Config, store: Store) -> Check:

@@ -19,8 +19,17 @@ path from the first state to the last, and the patch validator refuses a delete
 of anything not already archived, so neither this job nor a bug in it can
 remove something in one step.
 
-**Four things it never touches**, checked here before anything is proposed and
-again by the validator afterwards:
+**And a third thing, which is not a memory at all**: stored attachments that
+nothing points at any more (#234). This is the only place that may delete them,
+because it is the only place that knows what the Markdown still references --
+`siatt/store/blobs.py` deliberately never collects. It is also the one deletion
+here that git cannot undo. A memory that is `git rm`'d is still in history; a
+blob is a file beside the database, and when it goes it is gone. So it is the
+most conservative of the three: any memory protects it, archived or not, and
+anything that arrived recently is left alone whatever points at it.
+
+**Four things it never touches** among the memories, checked here before
+anything is proposed and again by the validator afterwards:
 
 - anything `pinned`
 - anything younger than the retention floor
@@ -40,12 +49,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from siatt.config import ForgetSettings, MemorySettings
+from siatt.memory import blobref
 from siatt.memory.document import MemoryDoc, MemoryError_
 from siatt.memory.layout import ARCHIVE_DIR
 from siatt.memory.ltm import ApplyResult, Change, CommitMeta, MemoryStore, MemoryStoreError
 from siatt.memory.manifest import Manifest
 from siatt.memory.patch import Archive, Delete, MemoryPatch, PatchCompiler, PatchError
 from siatt.store import Store
+from siatt.store.blobs import Attachments, Reclaimed
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +70,9 @@ PINNED = "pinned"
 TOO_RECENT = "younger than the retention floor"
 STILL_LINKED = "still linked from a live memory"
 OVER_BUDGET = "over this run's budget"
+BLOB_REFERENCED = "an attachment a memory still points at"
+BLOB_IN_USE = "an attachment a conversation still holds"
+BLOB_TOO_RECENT = "an attachment younger than the grace period"
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +91,7 @@ class Forgetting:
 
     archived: list[Doomed] = field(default_factory=list)
     collected: list[Doomed] = field(default_factory=list)
+    reclaimed: list[Reclaimed] = field(default_factory=list)
     protected: dict[str, int] = field(default_factory=dict)
     changed: list[str] = field(default_factory=list)
     sha: str | None = None
@@ -88,6 +103,9 @@ class Forgetting:
             parts.append(f"{len(self.archived)} archived")
         if self.collected:
             parts.append(f"{len(self.collected)} collected")
+        if self.reclaimed:
+            freed = sum(item.size for item in self.reclaimed)
+            parts.append(f"{len(self.reclaimed)} attachment(s) reclaimed ({freed:,} bytes)")
         if not parts:
             parts.append("nothing forgotten")
         if self.protected:
@@ -111,9 +129,11 @@ class Collector:
         policy: MemorySettings | None = None,
         job_id: str | None = None,
         now: datetime | None = None,
+        attachments: Attachments | None = None,
     ) -> None:
         self._store = store
         self._memory = memory
+        self._attachments = attachments
         self._settings = settings or ForgetSettings()
         self._policy = policy or MemorySettings()
         self._job_id = job_id
@@ -154,6 +174,14 @@ class Collector:
         outcome.changed = list(result.changed)
         outcome.sha = result.sha
         outcome.pull_request_url = result.pull_request_url
+
+        # After the commit, and only if it landed. The corpus is what decides
+        # whether an attachment is still needed, so reclaiming against a plan
+        # that failed to apply would be reclaiming against a corpus that does
+        # not exist. `result.changed` being empty is normal — a week with
+        # nothing to forget still has attachments to sweep.
+        outcome.reclaimed = await self._reclaim(corpus)
+
         log.info("forget: %s", outcome.summary())
         return outcome
 
@@ -281,6 +309,49 @@ class Collector:
                 memory_ids=[d.memory_id for d in (*outcome.archived, *outcome.collected)],
             ),
         )
+
+    # -- attachments ---------------------------------------------------------
+
+    async def _reclaim(self, corpus: Sequence[tuple[str, MemoryDoc]]) -> list[Reclaimed]:
+        """Delete stored attachments nothing needs any more.
+
+        Three protections, and each is deliberately wider than its equivalent
+        for a memory, because this deletion is the one git cannot undo.
+
+        *Any memory protects it, archived or not.* `_linked_from_live` ignores
+        links out of the archive, on the grounds that a corpus of dead
+        references would never shrink. That reasoning does not carry here: an
+        archived memory is still readable, still on its way to a `git rm` that
+        may never come, and taking its picture away leaves it saying "see the
+        photograph" beside nothing.
+
+        *Any conversation protects it.* A ref in `attachment_refs` means a
+        message somewhere still has it attached, and short-term memory is a
+        transcript of what was actually said.
+
+        *Recency protects it.* The hazard is not a race with one turn. A memory
+        that will cite a picture is written by `promote`, hours after the
+        conversation ended, so the grace period is measured in days.
+        """
+        if self._attachments is None:
+            return []
+        cited = set()
+        for _, doc in corpus:
+            cited |= blobref.referenced(doc.body)
+        try:
+            return await self._attachments.collect(
+                keep=cited,
+                older_than=self._now - timedelta(days=self._settings.blob_grace_days),
+                limit=self._settings.max_blobs_per_run,
+            )
+        except Exception:
+            # Broad, and it has to be. This runs *after* the commit, so anything
+            # raised here would throw away a `forget` that already succeeded and
+            # have the job retried against a corpus it has already changed. A
+            # full disk, a permission, a file somebody moved: the bytes will
+            # still be there next week, and so will this sweep.
+            log.exception("forget: could not sweep attachments")
+            return []
 
 
 # -- helpers -----------------------------------------------------------------
