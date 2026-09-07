@@ -325,12 +325,12 @@ place the image would have been. A placeholder lets the model say "you sent me a
 picture I cannot look at"; a 400 ends the turn and tells the person only that
 something broke.
 
-**An image is budgeted by area**, not by the length of its JSON. Both families
-charge roughly `width x height / 750` and cap at what a ~1568px-long-edge image
-costs, so dimensions are read from the header once, when the bytes are stored,
-and kept beside the blob. A format whose header we do not parse is charged the
-ceiling: over-counting wastes a little context, and under-counting ends the
-turn.
+**An image is budgeted by its prepared area**, not by the length of its JSON.
+Each endpoint's `image_policy` bounds outgoing resolution locally and supplies
+its token estimate. The packer checks hydrated headers and reserves the largest
+estimate across chat fallbacks. Unknown dimensions reserve the policy's full
+area; no provider-side resizing or universal token ceiling is assumed. See
+"Outgoing image limits" below for configuration and recovery.
 
 **A memory points at one, and never contains it.** The reference is an ordinary
 Markdown link with a scheme of our own — `[shot.png](siatt://blob/<sha256>)` —
@@ -1568,6 +1568,8 @@ allowed_mime = ["image/", "video/"]   # prefixes
 [llm.chat]
 kind   = "anthropic"
 # vision = false                       # a text-only endpoint; images become a note
+# Per endpoint (including each fallback): locally bound outgoing images.
+# image_policy = { max_edge = 1568, max_pixels = 1000000, pixels_per_token = 500, token_overhead = 256 }
 model  = "claude-opus-5"
 key_env = "ANTHROPIC_API_KEY"
 
@@ -1644,3 +1646,25 @@ siatt task resume <id>         start it again, and clear the failures that stopp
 siatt task run <id>            fire one occurrence now, without waiting for the clock
 siatt doctor                   check config, tokens, repo privacy, lease state
 ```
+
+
+### Outgoing image limits
+
+Every vision endpoint has an `image_policy`, with defaults shown above. Siatt
+bounds the long edge and total pixel area while preserving aspect ratio and
+applying EXIF orientation. Only the request copy changes; stored attachments
+remain original. PNG, JPEG, GIF and WebP still images are supported. Invalid or
+animated images fail with a request to send a valid still image; they are never
+silently removed. Missing, unsupported and text-only images retain their
+explanatory text placeholders.
+
+The packer estimates `ceil(prepared_pixels / pixels_per_token) + token_overhead`
+using the same local limits, taking the largest estimate across chat fallbacks.
+Unknown dimensions reserve the full configured area. These are configurable
+estimates, not guarantees about an endpoint's tokenizer. Set them for the model
+and deployment behind each endpoint. Lower `max_edge` or `max_pixels` when a
+server rejects an individual image for its media prefill limit; that limit is
+separate from the total context window. Permanent LLM errors dead-letter the
+inbox delivery immediately, while rate limits and transient failures retain
+backoff. After correcting a policy, failed deliveries can be retried through
+the existing inbox recovery command.

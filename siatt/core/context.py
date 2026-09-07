@@ -17,6 +17,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from siatt.errors import ConfigError
+from siatt.llm.images import DEFAULT_IMAGE_POLICY, ImagePolicy
 from siatt.llm.tokens import Tokenizer, count_message
 from siatt.llm.types import Message, ToolDef, ToolResultBlock, starts_turn
 
@@ -157,6 +158,7 @@ class ContextPacker:
         recent: Sequence[Message] = (),
         tools: Sequence[ToolDef] = (),
         status: str | None = None,
+        image_policies: tuple[ImagePolicy, ...] = (DEFAULT_IMAGE_POLICY,),
     ) -> PackedContext:
         """`status` is what Siatt has to say about the turn itself, if anything.
 
@@ -173,7 +175,7 @@ class ContextPacker:
         context_text, context_traces = self._pack_context(retrieved, episode_summary, status)
         traces.extend(context_traces)
 
-        messages, recent_trace = self._pack_recent(recent)
+        messages, recent_trace = self._pack_recent(recent, image_policies)
         traces.append(recent_trace)
 
         used = sum(t.used for t in traces)
@@ -287,7 +289,9 @@ class ContextPacker:
             return None, traces
         return "\n\n".join(blocks), traces
 
-    def _pack_recent(self, recent: Sequence[Message]) -> tuple[tuple[Message, ...], SegmentTrace]:
+    def _pack_recent(
+        self, recent: Sequence[Message], image_policies: tuple[ImagePolicy, ...]
+    ) -> tuple[tuple[Message, ...], SegmentTrace]:
         budget = self.budget.tokens_for(self.budget.recent)
         groups = group_turns(recent)
 
@@ -296,7 +300,7 @@ class ContextPacker:
         compacted = 0
         # Newest first: the most recent exchange is the one that must survive.
         for group in reversed(groups):
-            cost = sum(count_message(m, self._tok) for m in group)
+            cost = sum(count_message(m, self._tok, image_policies) for m in group)
             if used + cost > budget:
                 if kept:
                     break
@@ -305,8 +309,8 @@ class ContextPacker:
                 # missing is a hard 400. So a turn that has outgrown the budget
                 # on its own tool output has one way left to fit, which is to
                 # carry less of its own history (#202).
-                group, compacted = compact_tool_results(group, budget, self._tok)
-                cost = sum(count_message(m, self._tok) for m in group)
+                group, compacted = compact_tool_results(group, budget, self._tok, image_policies)
+                cost = sum(count_message(m, self._tok, image_policies) for m in group)
             kept.append(group)
             used += cost
 
@@ -346,7 +350,10 @@ def group_turns(messages: Sequence[Message]) -> list[list[Message]]:
 
 
 def compact_tool_results(
-    group: Sequence[Message], budget: int, tokenizer: Tokenizer
+    group: Sequence[Message],
+    budget: int,
+    tokenizer: Tokenizer,
+    image_policies: tuple[ImagePolicy, ...] = (DEFAULT_IMAGE_POLICY,),
 ) -> tuple[list[Message], int]:
     """Shrink a turn's own tool output until the turn fits. Never drop a block.
 
@@ -365,7 +372,7 @@ def compact_tool_results(
     never touched and no block is ever removed: the shape of the transcript is
     exactly what makes it replayable.
     """
-    cost = sum(count_message(m, tokenizer) for m in group)
+    cost = sum(count_message(m, tokenizer, image_policies) for m in group)
     if cost <= budget:
         return list(group), 0
 

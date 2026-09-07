@@ -9,7 +9,7 @@ import httpx
 
 from siatt.errors import LLMError, ProviderProtocolError
 from siatt.llm.base import HTTPProvider, collect
-from siatt.llm.images import described, encoded, sendable
+from siatt.llm.images import ImagePolicy, described, encoded, prepare, sendable
 from siatt.llm.types import (
     ChatRequest,
     ChatResponse,
@@ -53,6 +53,7 @@ class AnthropicCompatProvider(HTTPProvider):
         client: httpx.AsyncClient | None = None,
         extra_headers: dict[str, str] | None = None,
         supports_images: bool = True,
+        image_policy: ImagePolicy | None = None,
     ) -> None:
         headers = {
             "x-api-key": api_key,
@@ -67,6 +68,7 @@ class AnthropicCompatProvider(HTTPProvider):
             headers=headers,
             client=client,
             supports_images=supports_images,
+            image_policy=image_policy,
         )
 
     # -- request mapping -----------------------------------------------------
@@ -134,6 +136,7 @@ class AnthropicCompatProvider(HTTPProvider):
                         )
                 case ImageBlock():
                     if sendable(block, self.supports_images):
+                        block = prepare(block, self.image_policy)
                         blocks.append(
                             {
                                 "type": "image",
