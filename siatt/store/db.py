@@ -457,14 +457,25 @@ class Store:
         blob with a public arrival and a private one must come back once, not
         twice -- and because the question being asked is "may this conversation
         see these bytes at all", which any one permitted arrival answers.
+
+        The name is the exception, and it has to be a subquery for the same
+        reason: it lives on the arrival rather than on the blob, and there can
+        be several. The earliest permitted one wins, which is the arrival
+        `attachments_for_session` shows -- so a file named in a tool result and
+        the same file uploaded back out carry one name rather than two.
         """
         async with self._serial:
             async with self._conn.execute(
-                "SELECT sha256, mime, bytes, width, height, created_at FROM attachments a"
+                "SELECT a.sha256, a.mime, a.bytes, a.width, a.height, a.created_at,"
+                "       (SELECT r.name FROM attachment_refs r"
+                "          WHERE r.sha256 = a.sha256 AND r.name IS NOT NULL"
+                "            AND (r.scope = 'workspace' OR r.scope = ?)"
+                "          ORDER BY r.created_at, r.id LIMIT 1) AS name"
+                " FROM attachments a"
                 " WHERE a.sha256 = ? AND EXISTS ("
                 "   SELECT 1 FROM attachment_refs r WHERE r.sha256 = a.sha256"
                 "     AND (r.scope = 'workspace' OR r.scope = ?))",
-                (sha256, scope),
+                (scope, sha256, scope),
             ) as cur:
                 row = await cur.fetchone()
             return dict(row) if row else None

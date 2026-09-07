@@ -55,6 +55,13 @@ class ToolContext:
     #: `memory_search` for "yesterday" mid-turn lands on the same day the turn
     #: opened with.
     tz: str | tzinfo | None = None
+    #: Whether an answer from this conversation can carry a file at all. Set
+    #: from the surface, like `channel` above and for the same reason the model
+    #: does not get to supply it — except that this one is a fact about the way
+    #: out rather than about permission. `send_file` reads it before it resolves
+    #: anything, because the failure that matters is not an unsent file but an
+    #: answer that says "here it is" on a surface that only sends strings.
+    can_send_files: bool = False
     #: Memory ids the tools pulled into this turn, in the order they were
     #: reached. Mutable inside a frozen context on purpose: the scope above is
     #: a permission and must not be reassignable, while this is a notebook the
@@ -67,6 +74,12 @@ class ToolContext:
     #: image blocks on the tool-result turn, and the tool that wrote them reads
     #: the length back as the turn's budget for showing pictures.
     surfaced: list[str] = field(default_factory=list)
+    #: Digests of attachments this turn has asked to send back, in the order
+    #: they were named. The same kind of notebook as `surfaced`, read twice: by
+    #: `send_file` as the turn's remaining budget, and by the agent loop at the
+    #: end of the turn, which resolves each one back through the store — under
+    #: the scope, because what is written here is a digest and not a permission.
+    outgoing: list[str] = field(default_factory=list)
 
 
 ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[str]]

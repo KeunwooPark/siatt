@@ -27,7 +27,7 @@ from siatt.llm.types import (
 )
 from siatt.memory.retrieve import Retriever
 from siatt.store import Store
-from siatt.store.blobs import AttachmentError, Attachments
+from siatt.store.blobs import Attachment, AttachmentError, Attachments
 
 log = logging.getLogger(__name__)
 
@@ -123,6 +123,14 @@ class AgentResult:
     #: boosts and an ❌ marks suspect (#36), so it has to be what actually
     #: reached the model rather than what was ranked.
     memory_ids: list[str] = field(default_factory=list)
+    #: Files this turn asked to send back, resolved under the session's scope
+    #: after the loop ended. The rows rather than the digests: a surface about
+    #: to upload one needs the mime type and the name the file arrived under,
+    #: and re-reading them here is what keeps the scope check on the path that
+    #: produces the fact rather than on the surface that consumes it. Empty on
+    #: a surface that cannot send files, because the tool refused before it
+    #: resolved anything.
+    attachments: tuple[Attachment, ...] = ()
     credential_scrubbed: bool = False
 
     @property
@@ -289,6 +297,7 @@ class Agent:
         reply_to: str | None = None,
         tz: str | tzinfo | None = None,
         attachments: Sequence[str] = (),
+        can_send_files: bool = False,
     ) -> AgentResult:
         await self._store.ensure_session(session_id, surface=surface, scope=scope)
         # `external_id` is the surface's own key for this message, and it is
@@ -316,6 +325,10 @@ class Agent:
             channel=channel,
             reply_to=reply_to,
             tz=tz,
+            # Whether this way out can carry a file. False unless a surface
+            # says otherwise, so a new one is mute about attachments rather
+            # than promising something nobody wired up.
+            can_send_files=can_send_files,
         )
         # Built once, outside the loop: it is the same on every pass, and the
         # system block is the head of the cacheable prefix.
@@ -429,6 +442,7 @@ class Agent:
             # Tool calls append to the context as the turn runs, so this is
             # read at the end rather than built alongside `recalled`.
             memory_ids=list(dict.fromkeys([*recalled, *context.recalled])),
+            attachments=await self._outgoing(context.outgoing, scope),
             credential_scrubbed=credential_scrubbed,
         )
 
@@ -461,6 +475,32 @@ class Agent:
                     )
                 )
         return blocks
+
+    async def _outgoing(self, shas: Sequence[str], scope: str) -> tuple[Attachment, ...]:
+        """The files this turn asked to send, as rows rather than as digests.
+
+        Resolved here, at the end, for the reason `_blocks` resolves its own:
+        this is where the store is, and a surface that had to look one up would
+        be a second place that decides what an attachment is.
+
+        Scoped again, though `send_file` already checked. The notebook holds a
+        digest and a digest is not a permission, and the cost of asking twice is
+        one indexed read on a turn that is already over.
+
+        A blob that has gone since is dropped with a line in the log rather than
+        an exception. The answer is written and about to be posted; losing the
+        picture is the small half of that.
+        """
+        if self._attachments is None or not shas:
+            return ()
+        held = []
+        for sha in shas:
+            found = await self._attachments.get(sha, scope=scope)
+            if found is None:
+                log.warning("could not send attachment %s: not visible from %s", sha[:12], scope)
+                continue
+            held.append(found)
+        return tuple(held)
 
     async def _hydrate(self, history: list[Message], scope: str) -> list[Message]:
         """Put the bytes back into the image blocks about to be sent.

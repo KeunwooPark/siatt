@@ -21,7 +21,13 @@ from typer.testing import CliRunner
 
 from siatt import __version__
 from siatt.cli import _agent, app
-from siatt.config import Config, ProviderConfig, SearchSettings, StoreSettings
+from siatt.config import (
+    AttachmentSettings,
+    Config,
+    ProviderConfig,
+    SearchSettings,
+    StoreSettings,
+)
 from siatt.core.backoff import Backoff
 from siatt.core.events import InboundEvent
 from siatt.core.inbox import Inbox
@@ -783,6 +789,35 @@ async def test_a_search_key_that_will_not_resolve_does_not_stop_the_daemon(
 
     assert "web_search" not in names
     assert "current_time" in names, "and the rest of the session still works"
+
+
+# -- send_file exists only where there are files to send ----------------------
+
+
+def _keeping_files(tmp_path: Path, *, enabled: bool) -> Config:
+    return Config(
+        llm={"chat": ProviderConfig(kind="anthropic", model="claude-opus-5")},
+        store=StoreSettings(path=str(tmp_path / "siatt.db")),
+        attachments=AttachmentSettings(enabled=enabled),
+    )
+
+
+async def test_no_attachment_store_means_no_send_file_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing is kept, so there is nothing to send. A tool that could only
+    refuse is one that teaches the model to keep trying."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    assert "send_file" not in await _tool_names(_keeping_files(tmp_path, enabled=False))
+
+
+async def test_keeping_attachments_registers_send_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    assert "send_file" in await _tool_names(_keeping_files(tmp_path, enabled=True))
 
 
 # -- the scheduling tools are registered only where something will fire them --
