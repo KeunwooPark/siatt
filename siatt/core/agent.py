@@ -16,7 +16,9 @@ from siatt.llm.registry import ModelRole, ProviderRegistry
 from siatt.llm.types import (
     ChatRequest,
     ChatResponse,
+    ContentBlock,
     Delta,
+    ImageBlock,
     Message,
     ToolDef,
     ToolResultBlock,
@@ -25,6 +27,7 @@ from siatt.llm.types import (
 )
 from siatt.memory.retrieve import Retriever
 from siatt.store import Store
+from siatt.store.blobs import AttachmentError, Attachments
 
 log = logging.getLogger(__name__)
 
@@ -243,6 +246,7 @@ class Agent:
         config: AgentConfig | None = None,
         retriever: Retriever | None = None,
         inbound_scrub: Scrubber | None = None,
+        attachments: Attachments | None = None,
     ) -> None:
         self._registry = registry
         self._store = store
@@ -250,11 +254,16 @@ class Agent:
         self._packer = packer
         self._retriever = retriever
         self._inbound_scrub = inbound_scrub or (lambda text: text)
+        self._attachments = attachments
         self.config = config or AgentConfig()
 
     @property
     def store(self) -> Store:
         return self._store
+
+    @property
+    def attachments(self) -> Attachments | None:
+        return self._attachments
 
     @property
     def registry(self) -> ProviderRegistry:
@@ -279,6 +288,7 @@ class Agent:
         channel: str | None = None,
         reply_to: str | None = None,
         tz: str | tzinfo | None = None,
+        attachments: Sequence[str] = (),
     ) -> AgentResult:
         await self._store.ensure_session(session_id, surface=surface, scope=scope)
         # `external_id` is the surface's own key for this message, and it is
@@ -287,7 +297,13 @@ class Agent:
         safe_user_text = self._inbound_scrub(user_text)
         credential_scrubbed = credential_scrubbed or safe_user_text != user_text
         await self._store.append_message(
-            session_id, Message.user(user_text), author=author, external_id=external_id
+            session_id,
+            # Stored as references. The bytes are on disk and stay there; what
+            # goes in the transcript is which file, so that re-reading this
+            # conversation next week costs the same as it did today.
+            Message.user(user_text, images=await self._blocks(attachments, scope)),
+            author=author,
+            external_id=external_id,
         )
         # Everything a tool is allowed to know about *where* it is being called
         # from. Passed explicitly rather than read out of ambient state: these
@@ -329,6 +345,7 @@ class Agent:
             # cacheable prefix for material that has not changed.
             if iteration == 1:
                 pinned, retrieved, recalled = await self._recall(user_text, history, scope, tz)
+            history = await self._hydrate(history, scope)
             tools = self._tools.defs()
             packed = self._packer.pack(
                 system_prompt=system_prompt,
@@ -402,6 +419,72 @@ class Agent:
         )
 
     # -- internals -----------------------------------------------------------
+
+    async def _blocks(self, shas: Sequence[str], scope: str) -> list[ImageBlock]:
+        """The images that came with this message, as blocks to store.
+
+        Hashes in, blocks out: the surface knows what it stored and nothing
+        more, and the mime type and dimensions are read here because here is
+        where the store is. Non-images are skipped — a video is kept and
+        referenced (§4.1.1) and there is nothing to put in a turn for it, which
+        is what the note already told the model.
+
+        Scoped, so a hash from somewhere it should not be reachable resolves to
+        nothing rather than to a picture.
+        """
+        if self._attachments is None or not shas:
+            return []
+        blocks = []
+        for sha in shas:
+            held = await self._attachments.get(sha, scope=scope)
+            if held is not None and held.is_image:
+                blocks.append(
+                    ImageBlock(
+                        sha256=held.sha256,
+                        mime=held.mime,
+                        width=held.width,
+                        height=held.height,
+                    )
+                )
+        return blocks
+
+    async def _hydrate(self, history: list[Message], scope: str) -> list[Message]:
+        """Put the bytes back into the image blocks about to be sent.
+
+        Here rather than in the provider: `siatt/llm/types.py` exists so that no
+        provider representation leaks past the compat layer, and handing each
+        client a blob store would push storage the other way through the same
+        wall. The packer stays free of it too — it counts an image by its
+        dimensions, which are on the block already.
+
+        Scoped, like every other read of an attachment. The session's scope is
+        the one the turn is running under, so a blob that arrived somewhere
+        narrower is not resurrected here by a message that quotes it.
+
+        A blob that will not load is not a failed turn: the block keeps its
+        `data is None` and the compat layer says so in words. That is the same
+        bargain the fetcher makes — answer with less rather than not at all.
+        """
+        if self._attachments is None or not any(m.images for m in history):
+            return history
+        filled: list[Message] = []
+        for message in history:
+            if not message.images:
+                filled.append(message)
+                continue
+            content = [await self._with_data(b, scope) for b in message.content]
+            filled.append(message.model_copy(update={"content": tuple(content)}))
+        return filled
+
+    async def _with_data(self, block: ContentBlock, scope: str) -> ContentBlock:
+        if not isinstance(block, ImageBlock) or self._attachments is None:
+            return block
+        try:
+            data = await self._attachments.read(block.sha256, scope=scope)
+        except AttachmentError:
+            log.warning("could not read attachment %s for this turn", block.sha256[:12])
+            return block
+        return block.model_copy(update={"data": data})
 
     def _request(
         self, packed: PackedContext, *, tools: tuple[ToolDef, ...] | None = None

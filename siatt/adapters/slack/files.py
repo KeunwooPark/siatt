@@ -116,6 +116,11 @@ class Stored:
     name: str
     #: None when the bytes were not kept, whatever the reason.
     sha256: str | None = None
+    #: Whether the model will actually be shown it. An image is put in the turn
+    #: as a block it can look at; a video is stored and referenced and there is
+    #: nothing that reads one, and the note has to tell those apart or the model
+    #: will answer questions about a film it has never seen.
+    readable: bool = False
     #: Why not, in words a person reading the transcript would understand. The
     #: model sees this: it is what turns "I cannot read that" into "I cannot
     #: read that *because*", which is the difference between a dead end and
@@ -133,13 +138,17 @@ def note(stored: list[Stored]) -> str:
     """
     if not stored:
         return ""
-    lines = [
-        f"- {_shown(item.name)} — "
-        + ("stored, but Siatt cannot read it yet" if item.sha256 else f"not stored: {item.reason}")
-        for item in stored
-    ]
+    lines = [f"- {_shown(item.name)} — {_became(item)}" for item in stored]
     head = "[attached]" if len(stored) == 1 else f"[attached: {len(stored)} files]"
     return "\n".join([head, *lines])
+
+
+def _became(item: Stored) -> str:
+    if item.readable:
+        return "attached below, and Siatt can see it"
+    if item.sha256:
+        return "stored, but Siatt cannot read this kind of file"
+    return f"not stored: {item.reason}"
 
 
 #: A filename, shown. Whoever uploaded the file chose it, and it lands in a
@@ -208,7 +217,16 @@ class SlackFiles:
         except Exception:
             log.exception("could not fetch Slack attachments for %s", event.external_id)
             return event
-        return event.model_copy(update={"text": with_note(event.text, stored)})
+        # Positional, and safe to be: one outcome per descriptor, in order, by
+        # construction above. The hash goes back on the descriptor because that
+        # is what the turn acts on — the note is for the model to read, and a
+        # hash parsed back out of prose would be a second encoding of the same
+        # fact.
+        kept = tuple(
+            item.model_copy(update={"sha256": outcome.sha256}) if outcome.sha256 else item
+            for item, outcome in zip(event.attachments, stored, strict=True)
+        )
+        return event.model_copy(update={"text": with_note(event.text, stored), "attachments": kept})
 
     async def _one(self, item: Attached, event: InboundEvent) -> Stored:
         name = item.name or "an untitled file"
@@ -231,7 +249,10 @@ class SlackFiles:
         except SlackFileError as exc:
             log.info("could not fetch %s on %s: %s", name, event.external_id, exc)
             return Stored(name, reason=str(exc))
-        return Stored(name, sha256=sha256)
+        # Whether the model gets to look at it. Only images: no chat-completions
+        # endpoint takes a video, so one is kept and referenced and honestly
+        # described rather than quietly implied to have been watched.
+        return Stored(name, sha256=sha256, readable=(item.mime or "").startswith("image/"))
 
     async def _download(self, item: Attached, *, host: str, event: InboundEvent) -> str:
         assert item.url is not None and self._attachments is not None

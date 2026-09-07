@@ -211,6 +211,11 @@ class Runtime:
                 # unlike scope, this is a property of whoever spoke just now,
                 # and a thread can carry people in different zones.
                 tz=turn.event.tz,
+                # What the preparer managed to store. Hashes, not bytes: the
+                # agent reads them back through the attachment store, under the
+                # scope above, and a descriptor the fetch did not keep carries
+                # none and contributes nothing.
+                attachments=[a.sha256 for a in turn.event.attachments if a.sha256],
             )
         except BaseException:
             # Including cancellation, which is what a shutdown mid-turn is. A

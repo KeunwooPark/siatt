@@ -53,6 +53,16 @@ class Attached(BaseModel):
     #: Claimed, in bytes. Zero when the surface did not say.
     size: int = 0
 
+    #: Filled in once the bytes are in the attachment store, and empty for
+    #: anything that was not kept. It is what turns a descriptor into something
+    #: the turn can act on: the block that goes in the transcript references
+    #: this, and the agent reads the bytes back through it.
+    #:
+    #: Set after the queue rather than at ingress, so a payload sitting in the
+    #: inbox never carries one — which is correct, because nothing has been
+    #: fetched yet at that point.
+    sha256: str | None = None
+
 
 class InboundEvent(BaseModel):
     """One message from one surface, normalized.

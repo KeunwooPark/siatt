@@ -303,6 +303,34 @@ Two caps, both enforced while the bytes go past rather than after they are all
 in hand: `max_bytes` and a mime prefix allowlist (`image/`, `video/` by
 default). A cap applied to something already in memory is not a cap.
 
+**Images go into the turn; video does not.** An `ImageBlock` in
+`messages.content` is a *reference* — a hash, a mime type and the dimensions —
+because that column is JSON in SQLite and a base64 payload in it would put the
+blob back in the database through the back door. The bytes are attached on the
+way past: the agent hydrates the history it is about to send, the compat layer
+encodes it, and the field holding them is excluded from everything the store
+writes, so a block read back off disk always means "these bytes are somewhere,
+go and get them". Hydration is scoped like every other attachment read, so a
+hash naming a blob from a narrower conversation resolves to nothing.
+
+Video is stored, referenced, and never sent. No chat-completions endpoint takes
+one, and frame extraction is a different project; the note says so rather than
+letting the model imply it watched something.
+
+Three things can mean there is no picture to send — the file would not load, the
+endpoint is text-only (`vision = false`), or the format is one no vision model
+takes, such as a HEIC straight off a phone. All three become a sentence in the
+place the image would have been. A placeholder lets the model say "you sent me a
+picture I cannot look at"; a 400 ends the turn and tells the person only that
+something broke.
+
+**An image is budgeted by area**, not by the length of its JSON. Both families
+charge roughly `width x height / 750` and cap at what a ~1568px-long-edge image
+costs, so dimensions are read from the header once, when the bytes are stored,
+and kept beside the blob. A format whose header we do not parse is charged the
+ceiling: over-counting wastes a little context, and under-counting ends the
+turn.
+
 Nothing deletes. Deciding that bytes nothing points at may go needs to know what
 the Markdown still references, which is the collector's business rather than the
 store's.
@@ -333,8 +361,9 @@ reason to answer without it, not a reason to fail the turn and have the message
 redelivered until its retry budget runs out.
 
 What the model is told is a note appended to the message, composed after the
-fetch because ingress cannot know any of it. One line per file, saying either
-that it was stored and cannot be read yet or that it was not stored and why.
+fetch because ingress cannot know any of it. One line per file, saying which of
+three things happened: it is attached below and can be looked at, it was stored
+but is not a kind anything reads, or it was not stored and why.
 The filename in that line has its whitespace collapsed: whoever uploaded the
 file chose it, and the block reads as Siatt's own annotation, so a name holding
 a newline could otherwise forge a line claiming whatever it liked about a file
@@ -1364,6 +1393,7 @@ allowed_mime = ["image/", "video/"]   # prefixes
 
 [llm.chat]
 kind   = "anthropic"
+# vision = false                       # a text-only endpoint; images become a note
 model  = "claude-opus-5"
 key_env = "ANTHROPIC_API_KEY"
 

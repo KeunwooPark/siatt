@@ -7,6 +7,7 @@ subsystem only ever see the types defined here.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -44,6 +45,36 @@ class ThinkingBlock(_Block):
     signature: str | None = None
 
 
+class ImageBlock(_Block):
+    """A picture somebody sent, as a reference to bytes held elsewhere.
+
+    It carries no image data where it is *stored*. `messages.content` is JSON in
+    SQLite, and a base64 payload in there would put the blob back in the
+    database through the back door and make every context read enormous -- the
+    whole point of `siatt/store/blobs.py` is that the bytes are on disk.
+
+    `data` is filled in on the way to a provider and nowhere else: the agent
+    hydrates the history it is about to send, the compat layer encodes it, and
+    `exclude=True` keeps it out of everything the store writes. A block read
+    back off disk therefore always has `data is None`, which is exactly what it
+    should mean -- "these bytes are somewhere, go and get them".
+
+    `width` and `height` are what the packer budgets from. An image costs tokens
+    by area rather than by the length of its JSON, and a block estimated at its
+    serialized size is estimated at nearly nothing.
+    """
+
+    type: Literal["image"] = "image"
+    sha256: str
+    mime: str
+    #: In pixels, when the format was one whose header we could read. None for
+    #: anything else, and the packer charges the maximum instead.
+    width: int | None = None
+    height: int | None = None
+    #: Never persisted, never logged.
+    data: bytes | None = Field(default=None, exclude=True, repr=False)
+
+
 class ToolUseBlock(_Block):
     type: Literal["tool_use"] = "tool_use"
     id: str
@@ -59,7 +90,7 @@ class ToolResultBlock(_Block):
 
 
 ContentBlock = Annotated[
-    TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock,
+    TextBlock | ThinkingBlock | ImageBlock | ToolUseBlock | ToolResultBlock,
     Field(discriminator="type"),
 ]
 
@@ -71,8 +102,13 @@ class Message(BaseModel):
     content: tuple[ContentBlock, ...]
 
     @classmethod
-    def user(cls, text: str) -> Self:
-        return cls(role="user", content=(TextBlock(text=text),))
+    def user(cls, text: str, *, images: Sequence[ImageBlock] = ()) -> Self:
+        """A person's turn. Text first, then anything they sent with it.
+
+        Text first because both provider families read a turn in order, and an
+        image with the question after it reads as an image with a caption.
+        """
+        return cls(role="user", content=(TextBlock(text=text), *images))
 
     @classmethod
     def assistant(cls, text: str) -> Self:
@@ -92,6 +128,10 @@ class Message(BaseModel):
     def text(self) -> str:
         """Concatenated text blocks. Thinking and tool blocks are excluded."""
         return "".join(b.text for b in self.content if isinstance(b, TextBlock))
+
+    @property
+    def images(self) -> tuple[ImageBlock, ...]:
+        return tuple(b for b in self.content if isinstance(b, ImageBlock))
 
     @property
     def tool_uses(self) -> tuple[ToolUseBlock, ...]:

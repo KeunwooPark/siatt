@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
 from siatt.errors import StoreError
+from siatt.store.dimensions import HEAD_BYTES, dimensions
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle at runtime, not at type time
     from siatt.store.db import Store
@@ -76,6 +77,14 @@ class Attachment:
     #: What the surface called the file. Somebody else's text: it is shown, and
     #: never joined to a path.
     name: str | None = None
+    #: Pixels, for an image whose header we could read. None otherwise, and the
+    #: packer charges the ceiling rather than guessing small.
+    width: int | None = None
+    height: int | None = None
+
+    @property
+    def is_image(self) -> bool:
+        return self.mime.startswith("image/")
 
 
 class BlobStore:
@@ -156,6 +165,20 @@ class BlobStore:
         except OSError as exc:
             raise AttachmentError(f"attachment {sha256[:12]} is not on disk ({exc})") from exc
 
+    async def measure(self, sha256: str) -> tuple[int, int] | None:
+        """How big the picture is, or None for a format we do not parse.
+
+        Reads the head of the file rather than all of it: a dimension lives in
+        the first few hundred bytes of every format `dimensions` knows, and
+        loading a 20MB photograph to look at its header is a waste this runs on
+        every upload.
+        """
+        try:
+            head = await asyncio.to_thread(_head, self.path(sha256), HEAD_BYTES)
+        except OSError:
+            return None
+        return dimensions(head)
+
     async def remove(self, sha256: str) -> bool:
         """Delete the bytes. True when there was something to delete.
 
@@ -230,7 +253,17 @@ class Attachments:
                 f"(attachments.allowed_mime: {', '.join(self._allowed)})"
             )
         blob = await self._blobs.write(source)
-        await self._store.record_attachment(sha256=blob.sha256, mime=mime, size=blob.size)
+        # Measured here because here is where the file is: the header is a
+        # filesystem read away, and doing it in the packer would put one inside
+        # the loop that runs on every turn.
+        size = await self._blobs.measure(blob.sha256) if mime.startswith("image/") else None
+        await self._store.record_attachment(
+            sha256=blob.sha256,
+            mime=mime,
+            size=blob.size,
+            width=size[0] if size else None,
+            height=size[1] if size else None,
+        )
         await self._store.add_attachment_ref(
             sha256=blob.sha256,
             source=source_name,
@@ -270,7 +303,13 @@ def _attachment(row: dict[str, object]) -> Attachment:
         mime=str(row["mime"]),
         size=int(str(row["bytes"])),
         name=str(name) if name is not None else None,
+        width=_int(row.get("width")),
+        height=_int(row.get("height")),
     )
+
+
+def _int(value: object) -> int | None:
+    return int(str(value)) if value is not None else None
 
 
 async def _chunks(source: bytes | AsyncIterable[bytes]) -> AsyncIterator[bytes]:
@@ -286,6 +325,11 @@ async def _chunks(source: bytes | AsyncIterable[bytes]) -> AsyncIterator[bytes]:
         return
     async for chunk in source:
         yield chunk
+
+
+def _head(path: Path, limit: int) -> bytes:
+    with path.open("rb") as handle:
+        return handle.read(limit)
 
 
 def _checked(sha256: str) -> str:

@@ -147,7 +147,7 @@ async def test_an_image_is_stored_under_the_events_scope(store: Store, tmp_path:
     sha = hashlib.sha256(PNG).hexdigest()
     assert await attachments.get(sha, scope="private:U123") is not None
     assert await attachments.get(sha, scope="channel:C999") is None
-    assert "stored, but Siatt cannot read it yet" in prepared.text
+    assert "attached below, and Siatt can see it" in prepared.text
     rows = await store.raw("SELECT scope, name, external_id FROM attachment_refs")
     assert rows == [
         {
@@ -190,7 +190,7 @@ async def test_an_unrecognized_container_is_taken_on_slacks_word(
 
     prepared = await fetcher.collect(event(png()))
 
-    assert "stored" in prepared.text and "not stored" not in prepared.text
+    assert "Siatt can see it" in prepared.text and "not stored" not in prepared.text
 
 
 async def test_a_file_over_the_cap_is_abandoned(store: Store, tmp_path: Path) -> None:
@@ -226,7 +226,7 @@ async def test_video_is_stored_and_said_to_be_unread(store: Store, tmp_path: Pat
     prepared = await fetcher.collect(event(clip))
 
     assert await attachments.get(hashlib.sha256(MP4).hexdigest(), scope="workspace") is not None
-    assert "clip.mp4 — stored, but Siatt cannot read it yet" in prepared.text
+    assert "clip.mp4 — stored, but Siatt cannot read this kind of file" in prepared.text
 
 
 # -- failing without failing the turn ----------------------------------------
@@ -295,7 +295,7 @@ async def test_the_note_is_appended_to_what_the_person_said(store: Store, tmp_pa
     prepared = await fetcher.collect(event(png()))
 
     assert prepared.text == (
-        "what's in this?\n\n[attached]\n- shot.png — stored, but Siatt cannot read it yet"
+        "what's in this?\n\n[attached]\n- shot.png — attached below, and Siatt can see it"
     )
 
 
@@ -306,7 +306,7 @@ async def test_a_file_with_no_comment_is_the_whole_text(store: Store, tmp_path: 
 
     prepared = await fetcher.collect(silent)
 
-    assert prepared.text == "[attached]\n- shot.png — stored, but Siatt cannot read it yet"
+    assert prepared.text == "[attached]\n- shot.png — attached below, and Siatt can see it"
 
 
 async def test_nothing_attached_says_nothing() -> None:
@@ -329,7 +329,7 @@ async def test_a_filename_cannot_forge_a_line_of_the_note(store: Store, tmp_path
 
     assert prepared.text.count("\n- ") == 1
     assert "and Siatt has read it" in prepared.text  # flattened onto the one line
-    assert prepared.text.splitlines()[-1].endswith("stored, but Siatt cannot read it yet")
+    assert prepared.text.splitlines()[-1].endswith("attached below, and Siatt can see it")
 
 
 async def test_a_very_long_filename_is_cut(store: Store, tmp_path: Path) -> None:
@@ -340,3 +340,37 @@ async def test_a_very_long_filename_is_cut(store: Store, tmp_path: Path) -> None
 
     assert "…" in prepared.text
     assert len(prepared.text.splitlines()[-1]) < 200
+
+
+async def test_the_hash_goes_back_onto_the_descriptor(store: Store, tmp_path: Path) -> None:
+    """What the turn acts on. The note is prose for the model to read, and
+    parsing a hash back out of it would be a second encoding of one fact."""
+    fetcher = files(store_for(store, tmp_path))
+
+    prepared = await fetcher.collect(event(png()))
+
+    assert prepared.attachments[0].sha256 == hashlib.sha256(PNG).hexdigest()
+
+
+async def test_a_file_that_was_not_kept_carries_no_hash(store: Store, tmp_path: Path) -> None:
+    fetcher = files(store_for(store, tmp_path), client=serving(LOGIN_PAGE))
+
+    prepared = await fetcher.collect(event(png()))
+
+    assert prepared.attachments[0].sha256 is None
+
+
+async def test_hashes_line_up_with_their_own_files(store: Store, tmp_path: Path) -> None:
+    """The descriptors and their outcomes are zipped positionally. A refusal in
+    the middle must not shift every hash after it onto the wrong file."""
+    fetcher = files(store_for(store, tmp_path))
+    good = png()
+    doc = Attached(url=URL, name="q3.pdf", mime="application/pdf")
+
+    prepared = await fetcher.collect(event(doc, good, doc))
+
+    assert [a.sha256 for a in prepared.attachments] == [
+        None,
+        hashlib.sha256(PNG).hexdigest(),
+        None,
+    ]

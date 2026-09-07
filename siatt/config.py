@@ -95,6 +95,11 @@ class ProviderConfig(BaseModel):
     key_env: str | None = None
     embedding_dimensions: int | None = None
     timeout_seconds: float | None = None
+    #: Whether this endpoint takes an image in a user turn. True because the
+    #: models people configure are vision-capable; set it false for a text-only
+    #: endpoint — a local server, an older model — and a picture in the thread
+    #: becomes a sentence saying so instead of a 400 halfway through the turn.
+    vision: bool = True
     fallbacks: list[ProviderConfig] = Field(default_factory=list)
 
     def api_key(self) -> str:
@@ -114,6 +119,7 @@ class ProviderConfig(BaseModel):
                 model=self.model,
                 api_key=self.api_key(),
                 base_url=self.base_url or "https://api.anthropic.com/v1",
+                supports_images=self.vision,
             )
         return OpenAICompatProvider(
             model=self.model,
@@ -121,6 +127,7 @@ class ProviderConfig(BaseModel):
             base_url=self.base_url or "https://api.openai.com/v1",
             embedding_dimensions=self.embedding_dimensions,
             timeout=self.timeout_seconds,
+            supports_images=self.vision,
         )
 
     def chain(self) -> list[LLMProvider]:

@@ -14,10 +14,12 @@ import httpx
 
 from siatt.errors import ProviderProtocolError
 from siatt.llm.base import HTTPProvider, collect
+from siatt.llm.images import described, encoded, sendable
 from siatt.llm.types import (
     ChatRequest,
     ChatResponse,
     Delta,
+    ImageBlock,
     Message,
     MessageStop,
     StopReason,
@@ -53,6 +55,7 @@ class OpenAICompatProvider(HTTPProvider):
         timeout: httpx.Timeout | float | None = None,
         client: httpx.AsyncClient | None = None,
         extra_headers: dict[str, str] | None = None,
+        supports_images: bool = True,
     ) -> None:
         headers = {
             "authorization": f"Bearer {api_key}",
@@ -66,6 +69,7 @@ class OpenAICompatProvider(HTTPProvider):
             headers=headers,
             timeout=timeout,
             client=client,
+            supports_images=supports_images,
         )
         self._embedding_dimensions = embedding_dimensions
 
@@ -126,9 +130,41 @@ class OpenAICompatProvider(HTTPProvider):
                     }
                 )
             text = msg.text
-            if text or not results:
+            images = msg.images
+            if images:
+                # This API takes a user turn as either a string or an array of
+                # parts, and only the array form can carry a picture. Kept to
+                # the turns that actually have one: every other message
+                # serializes exactly as it did before, which is what stops this
+                # from being a wire-format change for installs that never send
+                # an image.
+                out.append({"role": msg.role, "content": self._parts(text, images)})
+            elif text or not results:
                 out.append({"role": msg.role, "content": text})
         return out
+
+    def _parts(self, text: str, images: tuple[ImageBlock, ...]) -> list[dict[str, Any]]:
+        """A user turn as content parts. Text first, then the pictures.
+
+        An image nothing can be shown becomes a text part saying so, in the
+        place the picture would have been — so the model reads "there was a
+        photograph here that I cannot look at" rather than reading a turn with
+        a gap in it.
+        """
+        parts: list[dict[str, Any]] = []
+        if text:
+            parts.append({"type": "text", "text": text})
+        for block in images:
+            if sendable(block, self.supports_images):
+                parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{block.mime};base64,{encoded(block)}"},
+                    }
+                )
+            else:
+                parts.append({"type": "text", "text": described(block, self.supports_images)})
+        return parts
 
     @staticmethod
     def _assistant(msg: Message) -> dict[str, Any]:

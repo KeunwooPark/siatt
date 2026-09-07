@@ -115,6 +115,7 @@ def build(
     config: AgentConfig | None = None,
     retriever: Retriever | None = None,
     inbound_scrub: Any = None,
+    attachments: Any = None,
 ) -> tuple[Agent, ScriptedProvider]:
     provider = ScriptedProvider(script)
     agent = Agent(
@@ -127,6 +128,7 @@ def build(
         config=config,
         retriever=retriever,
         inbound_scrub=inbound_scrub,
+        attachments=attachments,
     )
     return agent, provider
 
