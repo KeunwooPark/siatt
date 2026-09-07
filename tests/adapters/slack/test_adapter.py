@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -17,18 +18,23 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from siatt.adapters import slack as package
 from siatt.adapters.slack.app import NO_HTTP_VERIFICATION, SlackAdapter
-from siatt.adapters.slack.events import SlackContext, normalize
+from siatt.adapters.slack.events import Accepted, SlackContext, normalize
+from siatt.config import AttachmentSettings
 from siatt.core.agent import Agent
 from siatt.core.context import ContextPacker
 from siatt.core.events import InboundEvent
+from siatt.core.file_tools import file_tools
 from siatt.core.revise import TOMBSTONE
 from siatt.core.tools import ToolRegistry
 from siatt.llm.registry import ModelRole, ProviderRegistry
 from siatt.llm.tokens import Tokenizer
 from siatt.llm.types import ChatRequest, Delta
 from siatt.store import Store
+from siatt.store.blobs import Attachments
 from tests.conftest import until
 from tests.core.test_agent import ScriptedProvider, says
+from tests.core.test_agent_images import png
+from tests.core.test_file_tools import _sends as sends
 
 BOT = "U0SIATT"
 TEAM = "T0TEAM"
@@ -48,6 +54,10 @@ class RecordingClient(AsyncWebClient):
         super().__init__(token="xoxb-test")
         self.posted: list[dict[str, Any]] = []
         self.updates: list[dict[str, Any]] = []
+        self.uploaded: list[dict[str, Any]] = []
+        #: What happened, in order. A file must arrive after the answer it
+        #: belongs to, and "both happened" is not the assertion worth making.
+        self.order: list[str] = []
         self.profiles: dict[str, dict[str, Any]] = {
             HUMAN: {"name": "jane", "profile": {"display_name": "jane"}}
         }
@@ -57,11 +67,18 @@ class RecordingClient(AsyncWebClient):
         self._ts += 1
         ts = f"1700009999.{self._ts:06d}"
         self.posted.append(kwargs | {"ts": ts})
+        self.order.append("post")
         return {"ok": True, "ts": ts}
 
     async def chat_update(self, **kwargs: Any) -> Any:
         self.updates.append(kwargs)
+        self.order.append("update")
         return {"ok": True, "ts": kwargs["ts"]}
+
+    async def files_upload_v2(self, **kwargs: Any) -> Any:
+        self.uploaded.append(kwargs)
+        self.order.append("upload")
+        return {"ok": True, "files": []}
 
     async def users_info(self, *, user: str, **kwargs: Any) -> Any:
         # Answered rather than left to the real client: every delivered event
@@ -117,6 +134,7 @@ def make_adapter(
     provider: ScriptedProvider | None = None,
     concurrency: int = 8,
     stream: bool = True,
+    attachments: Attachments | None = None,
 ) -> tuple[SlackAdapter, RecordingClient]:
     client = RecordingClient()
     app = AsyncApp(
@@ -131,6 +149,7 @@ def make_adapter(
         app_token="xapp-test",
         concurrency=concurrency,
         stream=stream,
+        attachments=attachments,
     )
     return adapter, client
 
@@ -516,6 +535,138 @@ async def test_a_retried_turn_rewrites_its_own_placeholder(
         await asyncio.wait_for(running, timeout=30.0)
 
     assert len(client.posted) == 1, client.posted
+
+
+# -- files on the way out -----------------------------------------------------
+
+
+async def opening(event: dict[str, Any]) -> Any:
+    """What ingress makes of this message, so a test can attach a file to the
+    same session and scope the turn will run under."""
+
+    async def never(session_id: str) -> bool:
+        return False
+
+    return await normalize(
+        event, context=SlackContext(bot_user_id=BOT, team_id=TEAM), known_session=never
+    )
+
+
+def keeping_files(store: Store, tmp_path: Path) -> Attachments:
+    return AttachmentSettings(enabled=True).build(store, tmp_path / "siatt.db")
+
+
+async def attached(attachments: Attachments, event: InboundEvent) -> str:
+    """A photograph, arrived in the conversation the mention opens."""
+    return await attachments.put(
+        png(),
+        mime="image/png",
+        source_name="slack",
+        scope=event.scope,
+        session_id=event.session_id,
+        name="shot.png",
+    )
+
+
+def asking_for_it(store: Store, tokenizer: Tokenizer, attachments: Attachments, sha: str) -> Agent:
+    return Agent(
+        registry=ProviderRegistry({ModelRole.CHAT: [ScriptedProvider([sends(sha), says("here")])]}),
+        store=store,
+        tools=ToolRegistry(file_tools(store=store, attachments=attachments)),
+        packer=ContextPacker(tokenizer=tokenizer),
+        attachments=attachments,
+    )
+
+
+async def test_a_turn_that_asks_to_send_a_file_uploads_it_after_the_answer(
+    store: Store, tokenizer: Tokenizer, tmp_path: Path
+) -> None:
+    """End to end: the model names a file it was sent, and the file lands in the
+    thread — after the answer, because `LiveMessage` is still repainting until
+    the answer is final."""
+    attachments = keeping_files(store, tmp_path)
+    incoming = await opening(mention())
+    assert isinstance(incoming, Accepted)
+    sha = await attached(attachments, incoming.event)
+    client = RecordingClient()
+    app = AsyncApp(
+        client=client, signing_secret=NO_HTTP_VERIFICATION, request_verification_enabled=False
+    )
+    adapter = SlackAdapter(
+        asking_for_it(store, tokenizer, attachments, sha),
+        app=app,
+        context=SlackContext(bot_user_id=BOT, team_id=TEAM),
+        app_token="xapp-test",
+        attachments=attachments,
+    )
+
+    running = asyncio.create_task(adapter.runtime.run())
+    try:
+        await adapter.on_event(mention())
+        await until(lambda: bool(client.uploaded))
+    finally:
+        adapter.runtime.stop()
+        await asyncio.wait_for(running, timeout=10.0)
+
+    assert client.order[-1] == "upload", "the answer first, then the file"
+    assert client.uploaded[0]["filename"] == "shot.png"
+    assert client.uploaded[0]["file"] == png()
+    # Where the answer went: the thread the mention was in.
+    assert client.uploaded[0]["thread_ts"] == incoming.event.reply_to
+    assert client.uploaded[0]["channel"] == "C0DEPLOY"
+
+
+async def test_the_plain_path_uploads_too(
+    store: Store, tokenizer: Tokenizer, tmp_path: Path
+) -> None:
+    """`stream: false` is one post and no repaint, and the file still follows it."""
+    attachments = keeping_files(store, tmp_path)
+    incoming = await opening(mention())
+    assert isinstance(incoming, Accepted)
+    sha = await attached(attachments, incoming.event)
+    client = RecordingClient()
+    app = AsyncApp(
+        client=client, signing_secret=NO_HTTP_VERIFICATION, request_verification_enabled=False
+    )
+    adapter = SlackAdapter(
+        asking_for_it(store, tokenizer, attachments, sha),
+        app=app,
+        context=SlackContext(bot_user_id=BOT, team_id=TEAM),
+        app_token="xapp-test",
+        stream=False,
+        attachments=attachments,
+    )
+
+    running = asyncio.create_task(adapter.runtime.run())
+    try:
+        await adapter.on_event(mention())
+        await until(lambda: bool(client.uploaded))
+    finally:
+        adapter.runtime.stop()
+        await asyncio.wait_for(running, timeout=10.0)
+
+    assert client.order == ["post", "upload"]
+    assert client.updates == []
+
+
+async def test_an_install_that_keeps_no_files_says_the_surface_cannot_send(
+    store: Store, tokenizer: Tokenizer
+) -> None:
+    """Nothing on disk to send, so the tool refuses rather than the upload
+    failing — and there is no uploader at all."""
+    adapter, _ = make_adapter(store, tokenizer)
+
+    assert adapter.uploads is None
+    assert adapter.runtime._sends_files is False
+
+
+async def test_keeping_files_makes_the_surface_one_that_can_send(
+    store: Store, tokenizer: Tokenizer, tmp_path: Path
+) -> None:
+    adapter, _ = make_adapter(store, tokenizer, attachments=keeping_files(store, tmp_path))
+
+    assert adapter.uploads is not None
+    assert adapter.runtime._sends_files is True
 
 
 # -- revisions ----------------------------------------------------------------

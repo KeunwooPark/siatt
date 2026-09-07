@@ -450,6 +450,25 @@ class Store:
                 row = await cur.fetchone()
             return str(row["id"]) if row else ref_id
 
+    async def attachment_ref_id(self, *, source: str, external_id: str, sha256: str) -> str | None:
+        """The ref for one arrival, if it has already been recorded.
+
+        `add_attachment_ref` collapses a repeat into the existing row and cannot
+        tell the caller which happened, which is exactly the question egress has
+        to ask: a redelivered turn must rewrite its answer and *not* upload the
+        photograph again. Asking first, over the same partial unique index the
+        insert conflicts on, is the durable version of remembering it in the
+        process that did it.
+        """
+        async with self._serial:
+            async with self._conn.execute(
+                "SELECT id FROM attachment_refs"
+                " WHERE source = ? AND external_id = ? AND sha256 = ?",
+                (source, external_id, sha256),
+            ) as cur:
+                row = await cur.fetchone()
+            return str(row["id"]) if row else None
+
     async def attachment(self, sha256: str, *, scope: str) -> dict[str, Any] | None:
         """One blob, if `scope` is allowed to know it exists.
 

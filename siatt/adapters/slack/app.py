@@ -32,6 +32,7 @@ from siatt.adapters.slack.events import (
 from siatt.adapters.slack.files import SlackFiles
 from siatt.adapters.slack.identity import Directory
 from siatt.adapters.slack.stream import DEFAULT_INTERVAL, LiveMessage, SlackRateLimited
+from siatt.adapters.slack.upload import SlackUploads, UploadRefused
 from siatt.config import SlackSettings
 from siatt.core.agent import Agent, AgentResult
 from siatt.core.events import InboundEvent
@@ -75,6 +76,7 @@ class SlackAdapter:
         scrub: Callable[[str], str] | None = None,
         files: SlackFiles | None = None,
         owns_files: bool = False,
+        attachments: Attachments | None = None,
     ) -> None:
         self._app = app
         self._context = context
@@ -87,12 +89,27 @@ class SlackAdapter:
         self._owns_files = owns_files
         self.reviser = Reviser(agent.store)
         self.feedback = Feedback(agent.store)
+        self.uploads = (
+            SlackUploads(
+                uploader=_ClientUploader(self.client),
+                poster=_ClientPoster(self.client),
+                store=agent.store,
+                attachments=attachments,
+            )
+            if attachments is not None
+            else None
+        )
         self.runtime = Runtime(
             agent,
             self.open_reply if stream else one_message(self.reply),
             concurrency=concurrency,
             prepare=self._prepare,
             scrub=scrub,
+            # An answer here can carry a file, so `send_file` may resolve one
+            # (#247). Only with a store behind it: without `[attachments]`
+            # there is nothing on disk to send, and the honest answer to the
+            # model is the same one a terminal gives.
+            sends_files=attachments is not None,
         )
         self._handler: AsyncSocketModeHandler | None = None
         self._register()
@@ -149,6 +166,11 @@ class SlackAdapter:
                 hosts=tuple(settings.file_hosts),
             ),
             owns_files=True,
+            # The same store the fetch writes into and the agent reads back
+            # through. Egress reads it a third way -- under the session's scope,
+            # which is the whole of what stops a DM's photograph from being
+            # posted into a channel.
+            attachments=attachments,
         )
 
     async def _prepare(self, event: InboundEvent) -> InboundEvent:
@@ -378,6 +400,29 @@ class SlackAdapter:
         ts = str(posted.get("ts") or "")
         await self.opened_thread(event, ts)
         await self.remember_answer(event, result, ts)
+        await self.send_files(event, result)
+
+    async def send_files(self, event: InboundEvent, result: AgentResult) -> None:
+        """Put this turn's files in the thread, after the answer is in it.
+
+        Both egress paths end here, and both call it last. The answer is what
+        somebody is waiting for; a file is what the answer is about, and an
+        upload that fails must not be able to take the reply down with it —
+        which is why `SlackUploads.send` never raises.
+
+        `event.reply_to` and not the answer's own `ts`: the file goes where the
+        answer went. In a thread that is the thread; in a DM with no thread it
+        is the next message, which is where somebody would look for it.
+        """
+        if self.uploads is None:
+            return
+        await self.uploads.send(
+            result,
+            session_id=event.session_id,
+            external_id=event.external_id,
+            channel=event.channel,
+            thread_ts=event.reply_to,
+        )
 
     def _remember(self, external_id: str, ts: str) -> None:
         self._unfinished[external_id] = ts
@@ -465,6 +510,10 @@ class _Live:
         self._adapter._forget(self._event.external_id)
         if self._message.ts is not None:
             await self._adapter.remember_answer(self._event, result, self._message.ts)
+        # Last, and after the repaint has stopped: a file uploaded while the
+        # message was still being rewritten would land above an answer that had
+        # not finished arriving.
+        await self._adapter.send_files(self._event, result)
 
     async def aclose(self) -> None:
         await self._message.aclose()
@@ -513,6 +562,57 @@ class _ClientPoster:
             await self._client.chat_update(channel=channel, ts=ts, text=text)
         except SlackApiError as exc:
             raise _translate(exc) from exc
+
+
+class _ClientUploader:
+    """`Uploader`, over the Slack web client.
+
+    `files.upload` is retired; the flow is `files.getUploadURLExternal`, a POST
+    of the bytes to the address it answers with, and `files.completeUploadExternal`.
+    `files_upload_v2` is all three, and taking it from `slack_sdk` rather than
+    writing it out is also what keeps the bot token off the upload hop: that
+    address is pre-signed and carries its own authorization, and a hand-rolled
+    version would be one edit away from attaching the header anyway.
+    """
+
+    def __init__(self, client: AsyncWebClient) -> None:
+        self._client = client
+
+    async def upload(
+        self, *, channel: str, thread_ts: str | None, filename: str, title: str, data: bytes
+    ) -> None:
+        try:
+            await self._client.files_upload_v2(
+                channel=channel,
+                thread_ts=thread_ts,
+                filename=filename,
+                title=title,
+                file=data,
+                # The file info is a round trip nothing here reads.
+                request_file_info=False,
+            )
+        except SlackApiError as exc:
+            raise UploadRefused(_refusal(exc)) from exc
+
+
+#: Slack's way of saying the token cannot upload. All three mean the app is
+#: missing `files:write`, and none of them says so — which is the difference
+#: between a thread that reads "the app needs the files:write scope" and one
+#: that reads "not_allowed_token_type".
+_NO_SCOPE = ("not_allowed_token_type", "missing_scope", "no_permission", "access_denied")
+
+
+def _refusal(exc: SlackApiError) -> str:
+    """Why the file did not go, for somebody reading the thread."""
+    response = getattr(exc, "response", None)
+    code = str((response or {}).get("error") or "") if response is not None else ""
+    if code in _NO_SCOPE:
+        return "Siatt's Slack app lacks the files:write scope"
+    if code == "ratelimited":
+        return "Slack is rate-limiting uploads just now"
+    if code:
+        return f"Slack refused it ({code})"
+    return "Slack refused it"
 
 
 def _translate(exc: SlackApiError) -> Exception:

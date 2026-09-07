@@ -1301,6 +1301,19 @@ Details that bite, in rough order of how quickly they will bite:
   or a 200 carrying that page's HTML. Both are refused rather than stored
   (§4.1.1), and `siatt doctor` names the scope so it is discovered before
   somebody sends a photograph.
+- **Sending one back needs `files:write`**, and its silent failure is the mirror
+  image: the answer says *"here it is"* and nothing arrives. `files.upload` is
+  retired, so the flow is `getUploadURLExternal` → POST the bytes →
+  `completeUploadExternal`, which `files_upload_v2` is; the POST goes to a
+  pre-signed address that carries its own authorization, and the bot token must
+  not follow it there. The answer is posted first and the files follow it into
+  the same thread — a file uploaded while a live message is still repainting
+  lands above an answer that has not finished arriving — and an upload that
+  fails adds one line naming the file and the reason rather than leaving the
+  thread to imply the file was sent. Sending is recorded as an arrival in
+  `attachment_refs` under the request's own `external_id`, so the arrival key
+  that makes an inbound file arrive once makes an outbound one leave once,
+  across a restart as well as a redelivery.
 
 ### 10.2 CLI and HTTP
 
