@@ -306,7 +306,8 @@ def reindex(
         # One line per file. The index and the manifest read the same files and
         # refuse them for the same reasons, so a file both halves rejected was
         # named twice — once without a reason (#77). They are not always the
-        # same set: a duplicate id indexes fine and only the manifest minds.
+        # same set: the manifest minds things the index does not, such as a
+        # link that resolves to nothing.
         for problem in _one_per_file(result.problems, manifest.problems):
             err.print(f"[yellow]![/yellow] {problem.path}: {problem.reason}")
 
