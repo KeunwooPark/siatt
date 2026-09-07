@@ -1146,7 +1146,17 @@ async def _serve_slack(cfg: Config) -> None:
 
     async with _agent(cfg, daemon=True) as agent:
         adapter = await SlackAdapter.connect(
-            agent, cfg.slack, scrub=Redactor.from_config(cfg).scrub
+            agent,
+            cfg.slack,
+            scrub=Redactor.from_config(cfg).scrub,
+            # None when the install does not keep attachments, and the adapter
+            # says so in the note rather than staying silent about a file
+            # somebody sent.
+            attachments=(
+                cfg.attachments.build(agent.store, Path(agent.store.path))
+                if cfg.attachments.enabled
+                else None
+            ),
         )
         # The daemon is where background work belongs: it is the process that
         # stays up, and `siatt run` on a terminal is not.

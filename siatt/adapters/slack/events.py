@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from siatt.core.events import InboundEvent
+from siatt.core.events import Attached, InboundEvent
 from siatt.core.feedback import DOWN, UP, Verdict
 from siatt.core.revise import Revision
 
@@ -192,7 +192,8 @@ async def normalize(
             source=SOURCE,
             external_id=message_id(context.team_id, channel, ts),
             session_id=session,
-            text=_with_attachments(_strip_mention(text, context.bot_user_id), event),
+            text=_strip_mention(text, context.bot_user_id),
+            attachments=_attached(event),
             scope=scope_for(channel, author, is_dm=is_dm),
             author=author,
             channel=channel,
@@ -311,9 +312,11 @@ def _revision(event: dict[str, Any], subtype: str, context: SlackContext) -> Dec
     ts = str(inner.get("ts") or "")
     if not ts:
         return Ignored("an edit naming no message")
-    text = _with_attachments(
-        _strip_mention(str(inner.get("text") or ""), context.bot_user_id), inner
-    )
+    # No attachment note. A revision rewrites the stored transcript of a message
+    # that was already answered, and its attachments were already fetched or
+    # already refused under the original delivery; re-announcing them here would
+    # put a second note on a message that has one.
+    text = _strip_mention(str(inner.get("text") or ""), context.bot_user_id)
     return Changed(Revision(external_id=message_id(context.team_id, channel, ts), text=text))
 
 
@@ -328,43 +331,53 @@ def scope_for(channel: str, author: str, *, is_dm: bool) -> str:
     return f"private:{author}" if is_dm else f"channel:{channel}"
 
 
-def _with_attachments(text: str, event: dict[str, Any]) -> str:
-    """Say what came attached, since Siatt cannot open it yet.
+def _attached(event: dict[str, Any]) -> tuple[Attached, ...]:
+    """What came with the message, as descriptors rather than as prose.
 
-    Without this a `file_share` reaches the agent as its comment alone —
-    "what's in this?" with nothing in it, and no way to tell that a file is
-    what it is being asked about. Naming them is what lets it say it cannot
-    read them, which is the point of accepting the message at all.
+    Only what the payload says. Fetching happens behind the queue, and the note
+    the model reads is composed there too, once there is something true to say
+    about each file — this module runs inside the three-second ack and has no
+    network, no database, and no way to know whether a file was kept.
 
-    Nothing is assumed about the payload beyond "it parsed as JSON". This runs
-    before the inbox row exists, so an unexpected shape has to come out as a
-    decision rather than as an exception — an exception here is a message lost
-    with no record that it arrived, which is the failure ingress exists to
-    prevent.
+    Nothing is assumed about the payload beyond "it parsed as JSON". An
+    exception here is a message lost with no record that it arrived, which is
+    the failure ingress exists to prevent, so an unexpected shape has to come
+    out as a decision instead.
     """
     files = event.get("files")
     # Slack sends an array. A string here would be walked one character at a
     # time and a mapping one key at a time, both of which invent attachments
     # nobody sent; saying nothing is the honest reading of a field that nothing
     # can be read from.
-    names = [_filename(item) for item in files] if isinstance(files, list) else []
-    if not names:
-        return text
-    attached = f"[attached, which Siatt cannot open: {', '.join(names)}]"
-    return f"{text}\n\n{attached}" if text else attached
+    if not isinstance(files, list):
+        return ()
+    return tuple(_one_attachment(item) for item in files)
 
 
-def _filename(item: Any) -> str:
-    """What to call one attachment, whatever arrived in its place.
+def _one_attachment(item: Any) -> Attached:
+    """One entry, whatever arrived in its place.
 
     An entry that is not an object is still an entry: a file was attached, and
-    its name is the part we do not have. That is already what a `{}` means, so
-    it gets the same words rather than a second kind of unknown — and it stays
-    counted, because "something is attached that Siatt cannot open" is the whole
-    signal this note carries.
+    the details are the part we do not have. Same for one Slack will not give an
+    address for — a tombstoned upload, or one this install may not read. Both
+    become a descriptor with no URL, because "something is attached that Siatt
+    could not get" is a fact the answer needs, and an entry silently dropped
+    here is a question answered as though nothing was sent.
     """
-    name = item.get("name") if isinstance(item, dict) else None
-    return str(name) if name else "an untitled file"
+    if not isinstance(item, dict):
+        return Attached()
+    url = item.get("url_private_download") or item.get("url_private")
+    name = item.get("name")
+    mime = item.get("mimetype")
+    size = item.get("size")
+    return Attached(
+        url=url if isinstance(url, str) and url else None,
+        name=str(name) if name else None,
+        mime=str(mime) if mime else "",
+        # Slack's own claim, and only a hint: the cap is enforced against the
+        # bytes as they arrive, never against this.
+        size=size if isinstance(size, int) and size >= 0 else 0,
+    )
 
 
 def _mentions(text: str, bot_user_id: str) -> bool:

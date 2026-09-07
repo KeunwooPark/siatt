@@ -24,6 +24,36 @@ class EventError(SiattError):
     """A queued payload is not an event this build can deliver."""
 
 
+class Attached(BaseModel):
+    """A file that came with a message, before anything has fetched it.
+
+    A descriptor rather than the bytes, because this rides inside `inbox.payload`
+    and a queue row is not a place to put a video. It is also what keeps the
+    decision at ingress pure: saying *that* a file arrived is a judgement about a
+    payload, and going and getting it is a network call that must not sit in
+    front of the ack.
+
+    Every field is somebody else's claim. `mime` and `size` are what the surface
+    said, not what arrived, and nothing downstream may treat them as measured.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    #: Where to fetch it. Whether that address may be fetched *with a token* is
+    #: not this type's business; see `siatt/adapters/slack/files.py`.
+    #:
+    #: None when the surface named a file but gave nowhere to get it — a
+    #: tombstoned upload, or one this install may not read. That is still an
+    #: attachment the answer has to account for, so it is a descriptor with no
+    #: URL rather than an entry dropped on the floor.
+    url: str | None = None
+    #: What the surface called it. Shown; never joined to a path.
+    name: str | None = None
+    mime: str = ""
+    #: Claimed, in bytes. Zero when the surface did not say.
+    size: int = 0
+
+
 class InboundEvent(BaseModel):
     """One message from one surface, normalized.
 
@@ -84,6 +114,12 @@ class InboundEvent(BaseModel):
     #: arrived, and a queue that stops being able to read its own backlog after
     #: an upgrade is a queue that drops messages.
     origin: str = "message"
+
+    #: Files that came with the message, not yet fetched. Defaulted, like
+    #: `origin`, so a payload queued before this field existed still parses
+    #: after an upgrade — a queue that cannot read its own backlog is a queue
+    #: that drops messages.
+    attachments: tuple[Attached, ...] = ()
 
     def to_json(self) -> str:
         return self.model_dump_json()

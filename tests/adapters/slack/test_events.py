@@ -285,21 +285,37 @@ async def test_a_question_with_a_file_attached_is_answered() -> None:
     ignores you is worse than one that answers you twice")."""
     body = in_channel(f"<@{BOT}> what's in this?") | {
         "subtype": "file_share",
-        "files": [{"name": "q3.pdf"}],
+        "files": [
+            {
+                "name": "q3.pdf",
+                "mimetype": "application/pdf",
+                "size": 4096,
+                "url_private_download": "https://files.slack.com/files-pri/T1-F1/download/q3.pdf",
+            }
+        ],
     }
 
     event = accepted(await normalize(body, context=context(), known_session=never)).event
 
-    assert event.text == "what's in this?\n\n[attached, which Siatt cannot open: q3.pdf]"
+    # The text is the person's words alone. What arrived with them is a
+    # descriptor, because saying anything true about a file needs a fetch, and a
+    # fetch does not belong inside the three-second ack.
+    assert event.text == "what's in this?"
+    assert [(a.name, a.mime, a.size) for a in event.attachments] == [
+        ("q3.pdf", "application/pdf", 4096)
+    ]
+    assert event.attachments[0].url == "https://files.slack.com/files-pri/T1-F1/download/q3.pdf"
 
 
-async def test_a_file_with_no_comment_still_says_what_arrived() -> None:
-    """Otherwise the turn is empty and the agent has nothing to answer."""
+async def test_a_file_with_no_address_is_still_an_attachment() -> None:
+    """A tombstoned upload, or one this install may not read. Dropping it here
+    would answer "what's in this?" as though nothing had been sent."""
     body = dm("") | {"subtype": "file_share", "files": [{"name": "q3.pdf"}, {}]}
 
     event = accepted(await normalize(body, context=context(), known_session=never)).event
 
-    assert event.text == "[attached, which Siatt cannot open: q3.pdf, an untitled file]"
+    assert event.text == ""
+    assert [(a.name, a.url) for a in event.attachments] == [("q3.pdf", None), (None, None)]
 
 
 async def test_a_file_entry_that_is_not_an_object_is_still_an_attachment() -> None:
@@ -307,7 +323,7 @@ async def test_a_file_entry_that_is_not_an_object_is_still_an_attachment() -> No
     judgement has to reach a decision for anything JSON can hold, because the
     alternative is an exception on the path that has not written the inbox row
     yet — and an entry we cannot read the name of is one we cannot open, which
-    is exactly what the note says."""
+    is what the note downstream says about it."""
     body = dm("what's in this?") | {
         "subtype": "file_share",
         "files": ["F0123456", {"name": "q3.pdf"}, None],
@@ -315,10 +331,9 @@ async def test_a_file_entry_that_is_not_an_object_is_still_an_attachment() -> No
 
     event = accepted(await normalize(body, context=context(), known_session=never)).event
 
-    assert event.text == (
-        "what's in this?\n\n"
-        "[attached, which Siatt cannot open: an untitled file, q3.pdf, an untitled file]"
-    )
+    assert event.text == "what's in this?"
+    assert [a.name for a in event.attachments] == [None, "q3.pdf", None]
+    assert all(a.url is None for a in event.attachments)
 
 
 @pytest.mark.parametrize("files", ["F0123456", {"id": "F0123456"}, 7])
@@ -332,6 +347,7 @@ async def test_a_files_field_that_is_not_a_list_is_not_iterated(files: Any) -> N
     event = accepted(await normalize(body, context=context(), known_session=never)).event
 
     assert event.text == "what's in this?"
+    assert event.attachments == ()
 
 
 @pytest.mark.parametrize("subtype", ["file_share", "me_message", "thread_broadcast"])
