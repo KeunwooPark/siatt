@@ -32,12 +32,18 @@ class ConsolidationInput:
 
     channel_messages: Sequence[str] = ()
     memory_files: Mapping[str, str] = field(default_factory=dict)
+    #: Files the material came with, as lines a plan may cite. Untrusted like
+    #: the rest of this: the digest is Siatt's, but the name beside it is what
+    #: somebody called their upload, and it arrives in the same block as
+    #: everything else somebody else wrote.
+    attachments: Sequence[str] = ()
 
 
 def untrusted_block(content: ConsolidationInput) -> str:
     """Serialize and delimit untrusted content with a delimiter absent from it."""
     payload = json.dumps(
         {
+            "attachments": list(content.attachments),
             "channel_messages": list(content.channel_messages),
             "memory_files": dict(content.memory_files),
         },

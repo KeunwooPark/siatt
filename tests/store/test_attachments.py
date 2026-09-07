@@ -156,6 +156,75 @@ async def test_for_message_filters_before_it_returns(store: Store, tmp_path: Pat
     assert await files.for_message(message, scope="channel:C456") == []
 
 
+# -- what a conversation may cite --------------------------------------------
+
+
+async def test_a_session_sees_what_arrived_in_it(store: Store, tmp_path: Path) -> None:
+    """What `memory_write` resolves a handle against. A ref carries the session
+    from the moment the file is fetched, which is before the turn has appended
+    the message it came on."""
+    files = attachments(store, tmp_path)
+    await files.put(
+        PNG,
+        mime="image/png",
+        source_name="slack",
+        scope="workspace",
+        session_id="s1",
+        name="shot.png",
+    )
+
+    rows = await store.attachments_for_session("s1", scope="workspace")
+
+    assert [(r["sha256"], r["name"]) for r in rows] == [
+        (hashlib.sha256(PNG).hexdigest(), "shot.png")
+    ]
+    assert await store.attachments_for_session("s2", scope="workspace") == []
+
+
+async def test_a_ref_is_found_through_the_message_it_arrived_on(
+    store: Store, tmp_path: Path
+) -> None:
+    """The other half of the same question: a ref written with a message and no
+    session belongs to that message's conversation."""
+    files = attachments(store, tmp_path)
+    message = await a_message(store, "s1")
+    await files.put(PNG, mime="image/png", source_name="cli", scope="workspace", message_id=message)
+
+    rows = await store.attachments_for_session("s1", scope="workspace")
+    assert len(rows) == 1
+
+
+async def test_a_session_cannot_cite_across_the_scope_line(store: Store, tmp_path: Path) -> None:
+    """A DM's photograph is not citable from a channel that shares its session
+    id, for the same reason it is not readable there."""
+    files = attachments(store, tmp_path)
+    await files.put(
+        PNG, mime="image/png", source_name="slack", scope="private:U123", session_id="s1"
+    )
+
+    assert await store.attachments_for_session("s1", scope="private:U123") != []
+    assert await store.attachments_for_session("s1", scope="channel:C456") == []
+
+
+async def test_one_picture_sent_twice_is_one_thing_to_cite(store: Store, tmp_path: Path) -> None:
+    """Two arrivals, one blob, one line in the note. The name shown is the one
+    it arrived under first."""
+    files = attachments(store, tmp_path)
+    for name in ("first.png", "second.png"):
+        await files.put(
+            PNG,
+            mime="image/png",
+            source_name="slack",
+            scope="workspace",
+            session_id="s1",
+            name=name,
+        )
+
+    rows = await store.attachments_for_session("s1", scope="workspace")
+
+    assert [r["name"] for r in rows] == ["first.png"]
+
+
 # -- caps and kinds ----------------------------------------------------------
 
 

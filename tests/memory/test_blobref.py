@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from siatt.memory.blobref import link, prune, referenced, uri
+from siatt.memory.blobref import HANDLE_CHARS, handle, link, matching, prune, referenced, uri
 
 REAL = "a" * 64
 INVENTED = "b" * 64
@@ -96,3 +96,46 @@ def test_a_newline_in_the_name_cannot_split_the_link() -> None:
 
 def test_an_empty_name_still_reads_as_something() -> None:
     assert "an attachment" in link(REAL, "")
+
+
+# -- naming one in front of a model ------------------------------------------
+
+
+def test_a_handle_is_short_enough_to_copy() -> None:
+    """The whole reason it exists. Sixty-four characters is a citation that
+    fails on one typo, and fails silently."""
+    assert handle(REAL) == "a" * 12
+    assert len(handle(REAL)) == HANDLE_CHARS
+
+
+def test_a_handle_resolves_back_to_the_one_blob_it_names() -> None:
+    assert matching(handle(REAL), {REAL, INVENTED}) == [REAL]
+
+
+def test_a_handle_naming_two_blobs_resolves_to_both() -> None:
+    """Not to the first one. "Which of these?" and "no such file" are different
+    answers, and only the caller knows what to do about either."""
+    twin = "a" * 20 + "c" * 44
+
+    assert matching("a" * 8, {REAL, twin}) == sorted([REAL, twin])
+
+
+def test_the_ellipsis_off_an_attachment_note_still_resolves() -> None:
+    """A model copies what it was shown, and what it was shown ends in one."""
+    assert matching(f"{handle(REAL)}…", {REAL}) == [REAL]
+
+
+def test_a_whole_uri_still_resolves() -> None:
+    """A model that has read a memory has seen the reference in this shape."""
+    assert matching(uri(REAL), {REAL}) == [REAL]
+
+
+def test_a_prefix_too_short_to_mean_anything_names_nothing() -> None:
+    assert matching("aa", {REAL}) == []
+
+
+def test_a_handle_that_is_not_hex_names_nothing() -> None:
+    """A filename typed where an id belongs must not be scanned against every
+    digest in the conversation on the chance that it prefixes one."""
+    assert matching("shot.png", {REAL}) == []
+    assert matching("", {REAL}) == []

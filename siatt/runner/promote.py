@@ -40,14 +40,16 @@ which is why the competition step is not only about quality.
 
 from __future__ import annotations
 
+import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from siatt.config import MemorySettings, PromoteSettings
 from siatt.llm.registry import ModelRole, ProviderRegistry
+from siatt.memory import blobref
 from siatt.memory.changeset import collisions
 from siatt.memory.consolidate import (
     PLAN_TOKENS,
@@ -65,6 +67,7 @@ from siatt.memory.document import (
 )
 from siatt.memory.ltm import ApplyResult, Change, CommitMeta, MemoryStore, MemoryStoreError
 from siatt.memory.manifest import Manifest
+from siatt.memory.observation import Cited
 from siatt.memory.patch import (
     Create,
     MemoryPatch,
@@ -146,7 +149,7 @@ memory is already accurate.
 Write for a person reading the file in a year. One claim per memory; split
 rather than append when a file starts covering two subjects.
 
-Use these ids for any memory you create, each at most once:
+{attachments}Use these ids for any memory you create, each at most once:
 {ids}
 
 Set `created` and `updated` to {now} on anything you create.
@@ -155,6 +158,24 @@ here came from a conversation with that audience, and a memory may not be
 written to a wider one.
 
 {schema}"""
+
+
+#: Added to the task only for a group that has files to cite.
+#:
+#: Conditional because most groups have none, and a paragraph about attachments
+#: on every prompt forever is a paragraph the model reads instead of the ones
+#: that apply to it. It is also the only place the link syntax is stated, so a
+#: group with nothing to cite is never told how — which is one fewer shape to
+#: compose an invented digest into.
+CITING = """`attachments` lists files that came with these observations, one per line, as
+`[label] name — siatt://blob/<digest>`. A claim that is about one says so, and
+where a memory records such a claim, link the file in its body as an ordinary
+Markdown link: `[name](siatt://blob/<digest>)`, with the digest copied exactly
+from that line. Write no other `siatt://blob/` link. A digest that is not on one
+of those lines points at nothing, and is unwrapped out of your plan before it is
+applied — so the memory keeps your sentence and loses the evidence it claimed.
+
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,11 +190,43 @@ class Group:
     def ids(self) -> list[str]:
         return [str(row["id"]) for row in self.rows]
 
-    def claims(self) -> list[str]:
-        return [
-            f"[{n}] ({row['kind']}, confidence {row['confidence']}) {row['claim']}"
-            for n, row in enumerate(self.rows, start=1)
-        ]
+    def rendered(self, known: Container[str]) -> tuple[list[str], list[str]]:
+        """The claim lines and the attachment lines, which are labelled together.
+
+        One method because the two halves have to agree. A claim says `a1` and
+        the attachment list says what `a1` is; computing either alone would let
+        them drift, and a plan that cites the wrong picture is worse than one
+        that cites none.
+
+        Labels rather than filenames as the link between them, because two
+        people can send `IMG_3604.jpg` in one week and a group is a week of
+        observations about one subject.
+
+        `known` is the attachments that still exist. One collected since the
+        observation was written is dropped here rather than offered and
+        unwrapped later: a model told about a file it may cite will cite it,
+        and the sentence it writes around a link that then disappears is a
+        sentence about evidence.
+        """
+        labels: dict[str, str] = {}
+        files: list[str] = []
+        claims: list[str] = []
+        for n, row in enumerate(self.rows, start=1):
+            here = []
+            for cited in _cited(row):
+                if cited.sha256 not in known:
+                    continue
+                if cited.sha256 not in labels:
+                    labels[cited.sha256] = f"a{len(labels) + 1}"
+                    files.append(
+                        f"[{labels[cited.sha256]}] {cited.name} — {blobref.uri(cited.sha256)}"
+                    )
+                here.append(labels[cited.sha256])
+            attached = f" (attachments: {', '.join(here)})" if here else ""
+            claims.append(
+                f"[{n}] ({row['kind']}, confidence {row['confidence']}) {row['claim']}{attached}"
+            )
+        return claims, files
 
 
 @dataclass(slots=True)
@@ -402,13 +455,17 @@ class Promoter:
             # later read of that file fails.
             return [], f"{group.scope!r} is not a visibility scope a memory may carry"
         competing = await self._competing(group) | dict(extra or {})
+        claims, files = group.rendered(await self._known_blobs())
         task = TASK.format(
             ids="\n".join(f"  {i}" for i in _fresh_ids(len(group.rows) + SPARE_IDS)),
             now=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             scope=group.scope,
             schema=render_schema_md(),
+            attachments=CITING if files else "",
         )
-        content = ConsolidationInput(channel_messages=group.claims(), memory_files=competing)
+        content = ConsolidationInput(
+            channel_messages=claims, memory_files=competing, attachments=files
+        )
 
         silence = ""
         for budget in (PLAN_TOKENS, PLAN_TOKENS * RETRY_FACTOR):
@@ -586,6 +643,28 @@ def _group(rows: Sequence[dict[str, Any]]) -> list[Group]:
 
 def _fresh_ids(count: int) -> list[str]:
     return [new_memory_id() for _ in range(count)]
+
+
+def _cited(row: Mapping[str, Any]) -> list[Cited]:
+    """What one observation was looking at, off the row.
+
+    Tolerant of a row that predates the column and of one whose JSON is not
+    what this expects. An observation is a fact somebody may have been waiting
+    hours for, and dropping it because its attachment list will not decode
+    would lose the claim over the part of it that is decoration.
+    """
+    try:
+        payload = json.loads(str(row.get("attachments") or "[]"))
+    except json.JSONDecodeError:
+        log.warning("observation %s has an attachment list that is not JSON", row.get("id"))
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [
+        Cited(sha256=str(item["sha256"]), name=str(item.get("name") or "an attachment"))
+        for item in payload
+        if isinstance(item, dict) and item.get("sha256")
+    ]
 
 
 def _memory_ids(plan: Sequence[MemoryPatch]) -> list[str]:

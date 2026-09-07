@@ -6,11 +6,12 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from siatt.config import EpisodeSettings
+from siatt.config import AttachmentSettings, EpisodeSettings
 from siatt.errors import ContentFilterError, RateLimitError
 from siatt.llm.registry import ModelRole, ProviderRegistry
 from siatt.llm.types import (
@@ -23,6 +24,7 @@ from siatt.llm.types import (
     ToolResultBlock,
     Usage,
 )
+from siatt.memory.blobref import handle
 from siatt.runner.episodes import EpisodeCloser
 from siatt.store import Store
 
@@ -334,6 +336,88 @@ async def test_a_citation_of_a_line_that_does_not_exist_is_dropped(store: Store)
 
     refs = json.loads((await store.pending_observations())[0]["source_refs"])
     assert len(refs) == 1
+
+
+# -- what a claim was looking at ---------------------------------------------
+
+
+async def a_photograph(
+    store: Store, tmp_path: Path, *, session_id: str = "slack:T:C:1", scope: str = "workspace"
+) -> str:
+    files = AttachmentSettings(enabled=True).build(store, tmp_path / "siatt.db")
+    return await files.put(
+        b"\x89PNG\r\n\x1a\nnot-really",
+        mime="image/png",
+        source_name="slack",
+        scope=scope,
+        session_id=session_id,
+        name="whiteboard.png",
+    )
+
+
+def extracting(*attachments: str) -> str:
+    """One claim, citing whichever files it was told to."""
+    return json.dumps(
+        {
+            "observations": [
+                {
+                    "subject": "The release window",
+                    "claim": "The release window moved to Thursdays.",
+                    "kind": "decision",
+                    "source_lines": [4],
+                    "attachments": list(attachments),
+                }
+            ]
+        }
+    )
+
+
+async def test_an_extraction_can_cite_a_file_from_the_conversation(
+    store: Store, tmp_path: Path
+) -> None:
+    """The unattended half of #243. Nobody is there to ask, so the claim and the
+    photograph have to survive the close together or not at all."""
+    sha = await a_photograph(store, tmp_path)
+    await seed(store)
+    await make_idle(store)
+    closer, _ = closer_for(store, Scripted(assessed(), extracting(handle(sha))))
+
+    await closer.sweep()
+
+    observation = (await store.pending_observations())[0]
+    assert json.loads(observation["attachments"]) == [{"sha256": sha, "name": "whiteboard.png"}]
+
+
+async def test_an_invented_handle_is_dropped_and_the_claim_survives(
+    store: Store, tmp_path: Path
+) -> None:
+    """The one place this differs from the tool. There is nobody to tell and no
+    retry to be had, so the choice is a claim with no picture or no claim."""
+    await a_photograph(store, tmp_path)
+    await seed(store)
+    await make_idle(store)
+    closer, _ = closer_for(store, Scripted(assessed(), extracting("beef" * 3)))
+
+    await closer.sweep()
+
+    observation = (await store.pending_observations())[0]
+    assert observation["claim"] == "The release window moved to Thursdays."
+    assert json.loads(observation["attachments"]) == []
+
+
+async def test_an_extraction_cannot_cite_across_the_scope_line(
+    store: Store, tmp_path: Path
+) -> None:
+    """A photograph sent in a DM is not citable from a channel's episode, and
+    the conversation it would have been cited into is the one being closed."""
+    sha = await a_photograph(store, tmp_path, scope="private:U01")
+    await seed(store)
+    await make_idle(store)
+    closer, _ = closer_for(store, Scripted(assessed(), extracting(handle(sha))))
+
+    await closer.sweep()
+
+    assert json.loads((await store.pending_observations())[0]["attachments"]) == []
 
 
 async def test_the_summary_is_written_to_the_episode(store: Store) -> None:

@@ -14,9 +14,10 @@ from typing import Any
 
 import pytest
 
+from siatt.config import AttachmentSettings
 from siatt.core.agent import Agent
 from siatt.core.context import RETRIEVED_HEADER, ContextPacker
-from siatt.core.memory_tools import memory_tools
+from siatt.core.memory_tools import MAX_CITED, memory_tools
 from siatt.core.tools import ToolContext, ToolRegistry
 from siatt.llm.registry import ModelRole, ProviderRegistry
 from siatt.llm.tokens import HeuristicTokenizer, Tokenizer
@@ -33,6 +34,7 @@ from siatt.llm.types import (
     ToolUseStop,
     Usage,
 )
+from siatt.memory.blobref import handle
 from siatt.memory.bootstrap import bootstrap
 from siatt.memory.document import MemoryDoc, new_memory_id
 from siatt.memory.gitcmd import GitRepo
@@ -382,6 +384,149 @@ async def test_observations_start_pending_with_no_episode(memory: Memory, store:
     assert observation["state"] == "pending"
     assert observation["episode_id"] is None
     assert json.loads(observation["source_refs"]) == []
+
+
+# -- memory_write: citing what somebody sent ---------------------------------
+
+
+async def cited(memory: Memory) -> list[dict[str, str]]:
+    observation = (await memory.store.pending_observations())[0]
+    return list(json.loads(observation["attachments"]))
+
+
+async def sent(
+    memory: Memory,
+    tmp_path: Path,
+    *,
+    session_id: str = "cli:1",
+    scope: str = "workspace",
+    name: str = "IMG_3604.jpg",
+    payload: bytes = b"\xff\xd8\xff-not-really-a-jpeg",
+) -> str:
+    """A file that arrived in a conversation. Returns its digest."""
+    files = AttachmentSettings(enabled=True).build(memory.store, tmp_path / "siatt.db")
+    return await files.put(
+        payload,
+        mime="image/jpeg",
+        source_name="slack",
+        scope=scope,
+        session_id=session_id,
+        name=name,
+    )
+
+
+async def test_a_write_can_cite_a_file_from_this_conversation(
+    memory: Memory, tmp_path: Path
+) -> None:
+    """The whole point of #243: the photograph and the sentence about it arrive
+    together, and the observation carries both to `promote`."""
+    sha = await sent(memory, tmp_path)
+
+    result = await memory.call(
+        "memory_write",
+        {
+            "kind": "fact",
+            "subject": "Keunwoo",
+            "claim": "Keunwoo photographed the Sejong Arts Center on 5 September 2026.",
+            "attachments": [handle(sha)],
+        },
+        session_id="cli:1",
+    )
+
+    assert "queued" in result
+    assert "IMG_3604.jpg" in result, "the answer names what it kept, not a digest"
+    assert await cited(memory) == [{"sha256": sha, "name": "IMG_3604.jpg"}]
+
+
+async def test_the_name_in_a_citation_comes_from_the_store(memory: Memory, tmp_path: Path) -> None:
+    """The link text a person will read in a year. The model supplies a handle
+    and nothing else — it cannot relabel somebody's upload on the way past."""
+    sha = await sent(memory, tmp_path, name="whiteboard.png")
+
+    await memory.call(
+        "memory_write",
+        {"kind": "fact", "subject": "X", "claim": "Y", "attachments": [sha]},
+        session_id="cli:1",
+    )
+
+    assert await cited(memory) == [{"sha256": sha, "name": "whiteboard.png"}]
+
+
+async def test_an_invented_handle_records_nothing(memory: Memory, tmp_path: Path) -> None:
+    """A model that has seen one handle can compose another. Writing the claim
+    without the picture would report success for half the request."""
+    await sent(memory, tmp_path)
+
+    result = await memory.call(
+        "memory_write",
+        {"kind": "fact", "subject": "X", "claim": "Y", "attachments": ["dead" * 3]},
+        session_id="cli:1",
+    )
+
+    assert "nothing was recorded" in result
+    assert "IMG_3604.jpg" in result, "and it says what it could have cited instead"
+    assert await memory.store.pending_observations() == []
+
+
+async def test_a_file_from_another_conversation_cannot_be_cited(
+    memory: Memory, tmp_path: Path
+) -> None:
+    """The narrow rule: what is citable is what was sent *here*. A digest
+    carried in from somewhere else resolves to nothing."""
+    elsewhere = await sent(memory, tmp_path, session_id="cli:2")
+
+    result = await memory.call(
+        "memory_write",
+        {"kind": "fact", "subject": "X", "claim": "Y", "attachments": [handle(elsewhere)]},
+        session_id="cli:1",
+    )
+
+    assert "nothing was recorded" in result
+    assert await memory.store.pending_observations() == []
+
+
+async def test_a_handle_cannot_reach_across_the_scope_line(memory: Memory, tmp_path: Path) -> None:
+    """Same session id, narrower arrival. The scope check is in the query that
+    resolves the handle, so there is no answer to be had here at all."""
+    private = await sent(memory, tmp_path, scope="private:U01")
+
+    result = await memory.call(
+        "memory_write",
+        {"kind": "fact", "subject": "X", "claim": "Y", "attachments": [handle(private)]},
+        session_id="cli:1",
+    )
+
+    assert "nothing to cite" in result
+    assert await memory.store.pending_observations() == []
+
+
+async def test_citing_nothing_is_the_ordinary_case(memory: Memory) -> None:
+    """Most claims are not about a file, and one query per write to discover
+    that is one query too many."""
+    await memory.call("memory_write", {"kind": "fact", "subject": "X", "claim": "Y"})
+
+    assert await cited(memory) == []
+
+
+async def test_more_attachments_than_a_memory_may_hold_are_refused(
+    memory: Memory, tmp_path: Path
+) -> None:
+    """A memory is a claim, not an album."""
+    sha = await sent(memory, tmp_path)
+
+    result = await memory.call(
+        "memory_write",
+        {
+            "kind": "fact",
+            "subject": "X",
+            "claim": "Y",
+            "attachments": [handle(sha)] * (MAX_CITED + 1),
+        },
+        session_id="cli:1",
+    )
+
+    assert "invalid arguments" in result
+    assert await memory.store.pending_observations() == []
 
 
 # -- acceptance: the agent recovers from a pre-injection miss ----------------

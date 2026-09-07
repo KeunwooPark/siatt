@@ -40,6 +40,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -49,8 +50,9 @@ from siatt.errors import ContentFilterError, ContextOverflowError
 from siatt.llm.registry import ModelRole, ProviderRegistry
 from siatt.llm.structured import StructuredOutputError, complete_json
 from siatt.llm.types import ContentBlock, TextBlock
+from siatt.memory import blobref
 from siatt.memory.consolidate import ConsolidationInput, untrusted_block
-from siatt.memory.observation import ObservationDraft, ObservationKind
+from siatt.memory.observation import Cited, ObservationDraft, ObservationKind, citable
 from siatt.memory.subject import normalize_subject
 from siatt.store import Store
 
@@ -112,6 +114,11 @@ Rules:
 - `subject` is the entity the claim is about — a person, a project, a topic.
   Use the fullest name the conversation gives for it, consistently.
 - Cite the transcript line numbers the claim comes from, in `source_lines`.
+- When a claim is about a file somebody sent, put that file's id in
+  `attachments` — the `(id ...)` an attachment note gives it in the transcript.
+  Only where the file is what the claim is about: a photograph is not evidence
+  for every other thing said in the message it arrived on, and a claim citing
+  one it does not need makes a memory point at the wrong picture.
 - Extract nothing about the conversation itself: not that a question was asked,
   not that you answered it, not that somebody said thanks.
 - Skip anything transient — what someone is doing this afternoon, what the
@@ -147,6 +154,9 @@ class Extracted(BaseModel):
     )
     source_lines: list[int] = Field(
         default_factory=list, description="transcript line numbers this comes from"
+    )
+    attachments: list[str] = Field(
+        default_factory=list, description="ids of files from the transcript this claim is about"
     )
 
 
@@ -234,7 +244,17 @@ class EpisodeCloser:
         gated = self._is_gated(assessment, episode_id)
         drafts: list[ObservationDraft] = []
         if lines and not gated:
-            drafts = await self._extract(lines, sources, str(episode["scope"]), episode_id)
+            scope = str(episode["scope"])
+            drafts = await self._extract(
+                lines,
+                sources,
+                scope,
+                episode_id,
+                # Read once, and only for an episode something will be
+                # extracted from: a gated conversation is most of them, and it
+                # is not worth a query to find out what nobody will cite.
+                await self._citable(str(episode["session_id"]), scope),
+            )
 
         written = await self._store.close_episode(
             episode_id,
@@ -307,8 +327,22 @@ class EpisodeCloser:
             log.error("episode %s could not be assessed: %s", episode_id, exc)
             return None
 
+    async def _citable(self, session_id: str, scope: str) -> dict[str, str]:
+        """The attachments of this conversation, by digest.
+
+        The same set `memory_write` resolves against, and narrow for the same
+        reason: an extraction may cite a file that was sent in the conversation
+        it is reading, and a handle from anywhere else resolves to nothing.
+        """
+        return citable(await self._store.attachments_for_session(session_id, scope=scope))
+
     async def _extract(
-        self, lines: Sequence[str], sources: Sequence[str], scope: str, episode_id: str
+        self,
+        lines: Sequence[str],
+        sources: Sequence[str],
+        scope: str,
+        episode_id: str,
+        citable: Mapping[str, str],
     ) -> list[ObservationDraft]:
         try:
             extraction = await complete_json(
@@ -327,7 +361,7 @@ class EpisodeCloser:
 
         drafts = []
         for candidate in extraction.observations[: self._settings.max_observations]:
-            if (draft := _draft(candidate, sources, scope)) is not None:
+            if (draft := _draft(candidate, sources, scope, citable)) is not None:
                 drafts.append(draft)
         if len(extraction.observations) > self._settings.max_observations:
             log.warning(
@@ -395,13 +429,24 @@ def _untrusted(lines: Sequence[str]) -> str:
     )
 
 
-def _draft(candidate: Extracted, sources: Sequence[str], scope: str) -> ObservationDraft | None:
+def _draft(
+    candidate: Extracted,
+    sources: Sequence[str],
+    scope: str,
+    citable: Mapping[str, str] = MappingProxyType({}),
+) -> ObservationDraft | None:
     """One extracted claim as something worth storing, or None if it is not.
 
     The line numbers are resolved here rather than trusted: a model that cites
     line 40 of a twelve-line transcript has cited nothing, and a source ref
     that resolves to no message is worse than an absent one — it looks like
     provenance.
+
+    An attachment handle is resolved the same way and dropped as quietly. This
+    is the one place the two paths differ: `memory_write` refuses a handle it
+    cannot resolve, because there is a model in front of it to tell and a retry
+    to be had. Here there is nobody — the conversation ended hours ago — and the
+    choice is between a claim with no picture and no claim at all.
     """
     subject = normalize_subject(candidate.subject)
     claim = candidate.claim.strip()
@@ -415,4 +460,22 @@ def _draft(candidate: Extracted, sources: Sequence[str], scope: str) -> Observat
         scope=scope,
         confidence=candidate.confidence,
         source_refs=tuple(refs),
+        attachments=_cited(candidate.attachments, citable),
     )
+
+
+def _cited(handles: Sequence[str], citable: Mapping[str, str]) -> tuple[Cited, ...]:
+    """The attachments those handles name, in the order they were named.
+
+    A handle matching two blobs is dropped rather than guessed at: twelve
+    characters that could be either of two photographs is not a citation, and
+    picking one would put an arbitrary picture in a file somebody reads.
+    """
+    found: dict[str, Cited] = {}
+    for given in handles:
+        matches = blobref.matching(given, citable)
+        if len(matches) != 1:
+            log.info("an extraction cited %r, which names no one attachment here", given[:32])
+            continue
+        found[matches[0]] = Cited(sha256=matches[0], name=citable[matches[0]])
+    return tuple(found.values())
