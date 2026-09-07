@@ -97,6 +97,23 @@ class Attachment:
     def is_image(self) -> bool:
         return self.mime.startswith("image/")
 
+    @property
+    def shown(self) -> str:
+        """The name, flattened to one line and to a sane length.
+
+        Empty when there is no name, so each caller decides what an unnamed file
+        is called -- Slack wants a filename with an extension on it, a terminal
+        wants a phrase. What none of them wants is the raw string: somebody else
+        chose it, and a newline in it forges a line of whatever list it lands in.
+        """
+        flat = " ".join((self.name or "").split())
+        return flat[:_NAME_CHARS]
+
+
+#: How much of a filename is shown. Long enough for anything somebody meant to
+#: name, short enough that a list of files stays a list.
+_NAME_CHARS = 120
+
 
 class BlobStore:
     """Content-addressed bytes under one directory.
@@ -301,6 +318,28 @@ class Attachments:
         if await self._store.attachment(sha256, scope=scope) is None:
             raise AttachmentError(f"attachment {sha256[:12]} is not visible from {scope}")
         return await self._blobs.read(sha256)
+
+    async def path(self, sha256: str, *, scope: str) -> Path:
+        """Where the bytes are, if `scope` is allowed to have them.
+
+        For the surface whose way of handing somebody a file is to say where it
+        already is. In a terminal the person asking and the process answering
+        share a filesystem, so a path is the whole delivery -- and writing a
+        copy into their working directory would be a file they did not ask for,
+        under a name a stranger chose.
+
+        The same order as `read`, for the same reason: whether a conversation
+        may see a blob is a question for the database, and it must not depend on
+        whether the file happens to be there. And the same refusal when it is
+        not -- a path to a file the collector has taken is worse than the
+        sentence saying it is gone.
+        """
+        if await self._store.attachment(sha256, scope=scope) is None:
+            raise AttachmentError(f"attachment {sha256[:12]} is not visible from {scope}")
+        path = self._blobs.path(sha256)
+        if not await asyncio.to_thread(path.exists):
+            raise AttachmentError(f"attachment {sha256[:12]} is no longer on disk")
+        return path
 
     async def for_message(self, message_id: str, *, scope: str) -> list[Attachment]:
         rows = await self._store.attachments_for_message(message_id, scope=scope)

@@ -199,12 +199,8 @@ def _filename(held: Attachment) -> str:
     reads as a path. A file with no name at all is named after its kind, because
     Slack shows the filename and "untitled" tells nobody anything.
     """
-    flat = " ".join((held.name or "").split()).replace("/", "-").replace("\\", "-").strip(". ")
+    flat = held.shown.replace("/", "-").replace("\\", "-").strip(". ")
     if flat:
-        return flat[:_NAME_CHARS]
+        return flat
     suffix = _EXTENSIONS.get(held.mime) or held.mime.partition("/")[2] or "bin"
     return f"attachment.{suffix}"
-
-
-#: Slack's own limit is far higher; this is about a thread staying readable.
-_NAME_CHARS = 120
