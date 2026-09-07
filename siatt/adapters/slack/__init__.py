@@ -3,9 +3,9 @@
 `SlackAdapter` needs `slack_bolt`, which is the `slack` extra: `uv sync --extra
 slack`. Nothing else here does — every judgement that can leak a private
 conversation lives in `events.py`, the workspace directory lives in
-`identity.py`, and neither needs a socket. `identity.py` is why `siatt.runner`
-can import from this package at all: the `identity` job writes what the
-directory saw, on a build that may have no Slack extra installed.
+`identity.py`, and neither needs a socket; `files.py` needs only `httpx`.
+`identity.py` is why `siatt.runner` can import from this package at all:
+the `identity` job writes what the directory saw, on a build that may have no Slack extra installed.
 
 So the adapter is resolved lazily and the judgements are not. Importing this
 package on an install that never asked for Slack therefore costs nothing until
@@ -29,18 +29,21 @@ from siatt.adapters.slack.events import (
     scope_for,
     session_id,
 )
+from siatt.adapters.slack.files import DEFAULT_FILE_HOSTS, SlackFiles
 from siatt.adapters.slack.identity import Directory, SlackUser, user_ref
 
 if TYPE_CHECKING:
     from siatt.adapters.slack.app import SlackAdapter
 
 __all__ = [
+    "DEFAULT_FILE_HOSTS",
     "Accepted",
     "Decision",
     "Directory",
     "Ignored",
     "SlackAdapter",
     "SlackContext",
+    "SlackFiles",
     "SlackUser",
     "message_id",
     "normalize",

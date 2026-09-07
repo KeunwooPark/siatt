@@ -21,6 +21,7 @@ from typing import Any, Literal
 from platformdirs import user_config_dir, user_data_dir
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from siatt.adapters.slack.files import DEFAULT_FILE_HOSTS
 from siatt.core.agent import AgentConfig
 from siatt.core.context import ContextBudget
 from siatt.errors import ConfigError
@@ -182,6 +183,12 @@ class SlackSettings(BaseModel):
             "thumbsdown": "down",
         }
     )
+
+    #: Hosts Siatt will send the bot token to when fetching an attachment.
+    #: Suffixes, matched on a dotted boundary. Overridable for an install behind
+    #: a proxy; widening it is widening the set of places a URL out of an event
+    #: payload can send the token, so it is a deliberate act and not a default.
+    file_hosts: list[str] = Field(default_factory=lambda: list(DEFAULT_FILE_HOSTS))
 
     @field_validator("reactions")
     @classmethod

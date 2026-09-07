@@ -307,6 +307,39 @@ Nothing deletes. Deciding that bytes nothing points at may go needs to know what
 the Markdown still references, which is the collector's business rather than the
 store's.
 
+**Fetching them** is the one place in Siatt that sends an `Authorization` header
+to an address it did not choose. `web_fetch` never does (§8.3), and the
+difference is not squeamishness: a private Slack file is readable only with the
+bot token, and the URL naming it arrives *inside an event payload*. So the rules
+are checked before the request is built — https only, a host on an allowlist
+matched on a dotted boundary (`slack.com.evil.example` is not under
+`slack.com`), and **no redirects at all**. An authorized `url_private_download`
+answers 200; a 302 is Slack saying "not you" and pointing at a login page, and
+following it would put the token on the next hop.
+
+After the bytes, the check that the well-known version of this feature skips:
+what arrived has to be the kind of thing that was promised. An install missing
+the `files:read` scope gets HTML with a 200, and without a sniff it lands on
+disk named as a photograph. A contradiction is refused; an unrecognized
+container is taken on the surface's word, because an allowlist of magic numbers
+would silently drop whatever format phones start writing next.
+
+None of it runs inside the ack. The fetch is an `EventPreparer` (§3.1) — after
+the queue, before the turn — so a 20MB download never sits in front of the three
+seconds Slack allows, and a redelivered inbox row re-fetches into a
+content-addressed store where the second write is a no-op. It never raises,
+exactly as `Directory.hydrate` never raises: a file that will not come is a
+reason to answer without it, not a reason to fail the turn and have the message
+redelivered until its retry budget runs out.
+
+What the model is told is a note appended to the message, composed after the
+fetch because ingress cannot know any of it. One line per file, saying either
+that it was stored and cannot be read yet or that it was not stored and why.
+The filename in that line has its whitespace collapsed: whoever uploaded the
+file chose it, and the block reads as Siatt's own annotation, so a name holding
+a newline could otherwise forge a line claiming whatever it liked about a file
+that was never sent.
+
 ### 4.2 Derived index (SQLite — rebuildable)
 
 ```sql
@@ -1084,6 +1117,11 @@ Details that bite, in rough order of how quickly they will bite:
 - **Edits and deletes.** `message_changed` / `message_deleted` should propagate to
   STM, and a deleted source message should lower the confidence of observations
   derived from it.
+- **Attachments need `files:read`**, and the failure without it is silent in the
+  worst way: Slack answers a private-file request with a 302 to a sign-in page,
+  or a 200 carrying that page's HTML. Both are refused rather than stored
+  (§4.1.1), and `siatt doctor` names the scope so it is discovered before
+  somebody sends a photograph.
 
 ### 10.2 CLI and HTTP
 
@@ -1321,6 +1359,8 @@ cost_per_call_usd = 0.0               # from the vendor's price list; counts tow
 enabled      = true
 max_bytes    = 25000000               # per file, enforced while the bytes go past
 allowed_mime = ["image/", "video/"]   # prefixes
+# and, under [slack]:
+# file_hosts = ["slack.com"]          # where the bot token may be sent
 
 [llm.chat]
 kind   = "anthropic"

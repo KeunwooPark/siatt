@@ -29,6 +29,7 @@ from siatt.adapters.slack.events import (
     normalize,
     reaction,
 )
+from siatt.adapters.slack.files import SlackFiles
 from siatt.adapters.slack.identity import Directory
 from siatt.adapters.slack.stream import DEFAULT_INTERVAL, LiveMessage, SlackRateLimited
 from siatt.config import SlackSettings
@@ -39,6 +40,7 @@ from siatt.core.revise import Reviser
 from siatt.core.runtime import DEFAULT_CONCURRENCY, Reply, Runtime, one_message
 from siatt.errors import ConfigError
 from siatt.llm.types import Delta
+from siatt.store.blobs import Attachments
 from siatt.vault import resolve
 
 log = logging.getLogger(__name__)
@@ -71,6 +73,8 @@ class SlackAdapter:
         interval: float = DEFAULT_INTERVAL,
         reactions: Mapping[str, str] | None = None,
         scrub: Callable[[str], str] | None = None,
+        files: SlackFiles | None = None,
+        owns_files: bool = False,
     ) -> None:
         self._app = app
         self._context = context
@@ -79,13 +83,15 @@ class SlackAdapter:
         self._reactions = dict(reactions if reactions is not None else SlackSettings().reactions)
         self._unfinished: dict[str, str] = {}
         self.directory = Directory(agent.store, self._users_info, team_id=context.team_id)
+        self.files = files
+        self._owns_files = owns_files
         self.reviser = Reviser(agent.store)
         self.feedback = Feedback(agent.store)
         self.runtime = Runtime(
             agent,
             self.open_reply if stream else one_message(self.reply),
             concurrency=concurrency,
-            prepare=self.directory.hydrate,
+            prepare=self._prepare,
             scrub=scrub,
         )
         self._handler: AsyncSocketModeHandler | None = None
@@ -99,6 +105,7 @@ class SlackAdapter:
         *,
         concurrency: int = DEFAULT_CONCURRENCY,
         scrub: Callable[[str], str] | None = None,
+        attachments: Attachments | None = None,
     ) -> Self:
         """Build an adapter, having asked Slack who it is.
 
@@ -133,7 +140,32 @@ class SlackAdapter:
             scrub=scrub,
             stream=settings.stream,
             reactions=settings.reactions,
+            # The same bot token the client holds. It is the only credential
+            # that can read a private file, which is why `files.py` is so
+            # careful about where it is willing to send it.
+            files=SlackFiles(
+                attachments,
+                token=_token(settings.bot_token_env, "bot"),
+                hosts=tuple(settings.file_hosts),
+            ),
+            owns_files=True,
         )
+
+    async def _prepare(self, event: InboundEvent) -> InboundEvent:
+        """What happens between the queue and the turn.
+
+        Names first, then files. Both are network calls that must not sit in
+        front of Slack's three-second ack, and both are written never to raise:
+        a directory that is down or a file that will not come is a reason to
+        answer with less, not a reason to fail the turn and have the message
+        redelivered until its retry budget runs out.
+
+        Files last so that the note the model reads is appended to text whose
+        mentions are already resolved, rather than being walked over by the
+        hydration that follows it.
+        """
+        event = await self.directory.hydrate(event)
+        return event if self.files is None else await self.files.collect(event)
 
     @property
     def context(self) -> SlackContext:
@@ -370,6 +402,11 @@ class SlackAdapter:
         if self._handler is not None:
             await self._handler.close_async()  # type: ignore[no-untyped-call]
             self._handler = None
+        if self._owns_files and self.files is not None:
+            # Only a pool this adapter built. One passed in belongs to whoever
+            # passed it, and closing somebody else's client is how a test
+            # discovers its transport has gone.
+            await self.files.aclose()
 
     # -- internals -----------------------------------------------------------
 

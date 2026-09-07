@@ -82,6 +82,7 @@ async def diagnose(
     checks.append(_search(cfg))
     checks.append(_fetch(cfg))
     checks.append(_browser(cfg))
+    checks.append(_attachments(cfg))
     return Report(tuple(checks))
 
 
@@ -182,6 +183,32 @@ def _fetch(cfg: Config) -> Check:
         Status.OK,
         f"up to {fetch.max_chars:,} chars, {fetch.timeout_seconds:.0f}s, "
         f"{fetch.max_redirects} redirect(s)",
+    )
+
+
+def _attachments(cfg: Config) -> Check:
+    """Whether files people send are kept, where, and under what limits.
+
+    `OK` either way — off is a choice an install made. What earns the line is
+    the scope: a Slack app without `files:read` can be configured perfectly and
+    still fetch nothing but login pages, and that failure is invisible until
+    somebody sends a photograph. Saying it here is cheaper than saying it in a
+    thread.
+
+    Offline, like every other check in this file. Asking Slack which scopes the
+    token actually carries would be a network call in a command people run to
+    find out why the network is not working.
+    """
+    files = cfg.attachments
+    if not files.enabled:
+        return Check("attachments", Status.SKIP, "disabled; files are named but not kept")
+    where = files.blobs(cfg.store.resolved()).root
+    kinds = ", ".join(files.allowed_mime)
+    return Check(
+        "attachments",
+        Status.OK,
+        f"{kinds} up to {files.max_bytes:,} bytes, in {where} "
+        "(the Slack app needs the files:read scope)",
     )
 
 
