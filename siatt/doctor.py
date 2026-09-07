@@ -226,10 +226,11 @@ def _attachments(cfg: Config) -> Check:
     """Whether files people send are kept, where, and under what limits.
 
     `OK` either way — off is a choice an install made. What earns the line is
-    the scope: a Slack app without `files:read` can be configured perfectly and
-    still fetch nothing but login pages, and that failure is invisible until
-    somebody sends a photograph. Saying it here is cheaper than saying it in a
-    thread.
+    the scopes: a Slack app without `files:read` can be configured perfectly and
+    still fetch nothing but login pages, and one without `files:write` answers
+    "here it is" and sends nothing. Both failures are invisible until somebody
+    sends a photograph or asks for one back, and saying it here is cheaper than
+    saying it in a thread.
 
     Offline, like every other check in this file. Asking Slack which scopes the
     token actually carries would be a network call in a command people run to
@@ -244,7 +245,7 @@ def _attachments(cfg: Config) -> Check:
         "attachments",
         Status.OK,
         f"{kinds} up to {files.max_bytes:,} bytes, in {where} "
-        "(the Slack app needs the files:read scope)",
+        "(the Slack app needs files:read to fetch them and files:write to send them back)",
     )
 
 

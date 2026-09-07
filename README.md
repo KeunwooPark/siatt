@@ -77,6 +77,7 @@ and export the two tokens `siatt init` asked for the names of:
 uv sync --extra slack
 export SLACK_APP_TOKEN=xapp-...   # Socket Mode, connections:write
 export SLACK_BOT_TOKEN=xoxb-...   # app_mentions:read, chat:write, im:history
+                                  # with [attachments]: files:read, files:write
 uv run siatt run --slack
 ```
 
