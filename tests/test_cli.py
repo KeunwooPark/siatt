@@ -24,6 +24,7 @@ from siatt.cli import _agent, app
 from siatt.config import (
     AttachmentSettings,
     Config,
+    ImageSettings,
     ProviderConfig,
     SearchSettings,
     StoreSettings,
@@ -818,6 +819,72 @@ async def test_keeping_attachments_registers_send_file(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
 
     assert "send_file" in await _tool_names(_keeping_files(tmp_path, enabled=True))
+
+
+# -- image_generate exists only where a drawing has somewhere to go -----------
+
+
+def _drawing(tmp_path: Path, *, attachments: bool, **images: object) -> Config:
+    return Config(
+        llm={"chat": ProviderConfig(kind="anthropic", model="claude-opus-5")},
+        store=StoreSettings(path=str(tmp_path / "siatt.db")),
+        attachments=AttachmentSettings(enabled=attachments),
+        images=ImageSettings(**images),  # type: ignore[arg-type]
+    )
+
+
+async def test_drawing_off_means_no_image_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    names = await _tool_names(_drawing(tmp_path, attachments=True))
+
+    assert "image_generate" not in names
+
+
+async def test_drawing_on_registers_the_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("FAUCET_API_KEY", "fct-1")
+
+    names = await _tool_names(
+        _drawing(tmp_path, attachments=True, enabled=True, key_env="FAUCET_API_KEY")
+    )
+
+    assert "image_generate" in names
+
+
+async def test_drawing_without_an_attachment_store_registers_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A drawing has to be kept before it can be sent, so `[images]` without
+    `[attachments]` is a tool that can only spend money and throw the result
+    away. `siatt doctor` says so; the session simply does not offer it."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("FAUCET_API_KEY", "fct-1")
+
+    names = await _tool_names(
+        _drawing(tmp_path, attachments=False, enabled=True, key_env="FAUCET_API_KEY")
+    )
+
+    assert "image_generate" not in names
+    assert "current_time" in names, "and the rest of the session still works"
+
+
+async def test_a_drawing_key_that_will_not_resolve_does_not_stop_the_daemon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.delenv("FAUCET_API_KEY", raising=False)
+
+    names = await _tool_names(
+        _drawing(tmp_path, attachments=True, enabled=True, key_env="FAUCET_API_KEY")
+    )
+
+    assert "image_generate" not in names
+    assert "send_file" in names, "and the rest of the session still works"
 
 
 # -- the scheduling tools are registered only where something will fire them --

@@ -326,6 +326,49 @@ URL but Chromium resolves them itself, so the DNS pin covers the document rather
 than every subresource. Chromium's own private-network policy is what keeps that
 narrow.
 
+## Drawing a picture
+
+Everything Siatt has ever sent, it was sent first. `send_file` puts a file back
+in the thread, and says so itself: *it does not make files.* So "draw me a
+diagram of that" got a paragraph, on the surface that could most easily have
+shown a picture.
+
+**Off by default, and pointed at whatever gateway you already use.** One drawing
+costs what a great many turns cost, so this is a capability an install chooses
+rather than one it discovers:
+
+```toml
+[images]
+enabled  = true
+model    = "openai/gpt-image-2"          # the default
+base_url = "https://api.intfaucet.com/v1"
+key_env  = "FAUCET_API_KEY"
+size     = "1024x1024"                    # optional, WIDTHxHEIGHT
+# quality = "medium"                      # only where the endpoint has tiers
+```
+
+Any endpoint that answers `POST /v1/images/generations` will do, which today is
+most of them. It needs `[attachments]` on as well — a drawing has to be kept
+before it can be sent — and without both, the tool is not registered at all, so
+Siatt never offers a picture this install cannot make. `siatt doctor` says which
+half is missing.
+
+What it draws arrives with the answer: no second step, uploaded in Slack and
+printed as a path in the terminal, sharing the same "at most four files on one
+answer" budget as `send_file`. Three things are settled *before* the request
+goes out, because a refusal that arrives after the money is spent is not a
+refusal: that the surface can carry a file at all, that the answer has room for
+one, and that the daily `[budget]` ceiling has not been reached. The endpoint
+reports its usage in tokens, so a drawing lands in `siatt cost` beside every
+other call and `[pricing]` prices it on the model prefix like anything else.
+
+**Nothing it draws is evidence.** Long-term memory is Markdown a person reads
+and believes, and a claim citing an image Siatt invented would be a fabricated
+exhibit filed in a file somebody trusts — worse than a broken link, because
+nothing about it looks wrong. So a generated file is stored as `generated` and
+no memory can cite one. It can still be sent, and sent again; it cannot become a
+footnote.
+
 ## Development
 
 ```bash

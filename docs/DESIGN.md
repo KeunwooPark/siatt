@@ -273,7 +273,7 @@ CREATE TABLE attachments (
 CREATE TABLE attachment_refs (
   id            TEXT PRIMARY KEY,       -- ULID
   sha256        TEXT NOT NULL REFERENCES attachments(sha256),
-  source        TEXT NOT NULL,          -- 'slack' | 'cli' | 'http'
+  source        TEXT NOT NULL,          -- 'slack' | 'cli' | 'http' | 'generated'
   external_id   TEXT,                   -- the surface's id for the message
   session_id    TEXT,
   message_id    TEXT REFERENCES messages(id) ON DELETE CASCADE,
@@ -287,6 +287,11 @@ CREATE UNIQUE INDEX attachment_refs_arrival
   ON attachment_refs (source, external_id, sha256)
   WHERE external_id IS NOT NULL;
 ```
+
+**`source` says where the bytes came from, and one value is not a surface.**
+`generated` means Siatt drew them (§8.7), and it is what keeps an image nobody
+took from being cited as evidence in the corpus. The earliest permitted arrival
+decides, so uploading a drawing back into the thread cannot relabel it.
 
 **Scope is on the ref, not on the blob**, and that is why there are two tables.
 The same picture sent in a DM and posted in a public channel is one set of bytes
@@ -960,7 +965,8 @@ So the agent also gets:
 - `memory_write(kind, subject, claim, attachments)` → enqueue an observation (never a direct write)
 
 And, where the surface can carry one, `send_file(ids)` → the files that go back
-with this answer (§4.1.1).
+with this answer (§4.1.1), and `image_generate(prompt)` → a picture drawn for it
+(§8.7).
 
 Do not pick one strategy. Injection handles the 90% case; tools handle the tail.
 Note that `memory_write` enqueues into `observations` — the agent proposes, the
@@ -1191,6 +1197,71 @@ final packed context.
 Build this in week one. Retrieval you cannot debug is retrieval you cannot
 improve, and every quality complaint about this system will bottom out in "why
 did it not remember X".
+
+### 8.7 Drawing a picture
+
+Every file Siatt has ever sent arrived first. §4.1.1 is an inbound store with an
+egress path bolted on: `send_file` resolves a digest that somebody else's upload
+put there, and says so — *it does not make files*. `image_generate(prompt)` is
+the verb that does.
+
+**Its own small protocol** (`siatt/imagen/base.py`), not another `ProviderKind`,
+on §8.2's argument for search: generation shares nothing with a model call but
+HTTP — no roles, no streaming, no fallback chain, no embeddings — and folding it
+in would put an `image` branch inside every method of a class that exists to talk
+to models. It does share the transport, and through it the error mapping: a
+refused prompt arrives as `ContentFilterError`, which the registry already treats
+as terminal, rather than as an opaque 400.
+
+Unlike search it is billed **per token**, because the endpoint reports usage that
+way. So there is no `cost_per_call_usd` here: a drawing lands in `llm_calls` at
+`role = "image"` and `[pricing]` prices it on the model prefix like every other
+call.
+
+Three things are settled before the request goes out, and the order is the
+design:
+
+1. **The surface can carry a file.** `send_file`'s rule and its reason: the
+   failure worth engineering against is not a missing picture, it is an answer
+   that says *"here it is"* where nothing can be sent.
+2. **The answer has room for it.** `MAX_SENT` is one budget — what one answer may
+   carry — counted off the same notebook `send_file` counts off.
+3. **The `[budget]` ceiling has not been reached.** §6.1's order, for a much
+   larger version of its reason. One drawing is worth many turns, and a request
+   that has been billed cannot be unspent.
+
+What it makes goes out **with the answer**, rather than waiting to be named
+again. A model that has drawn a picture on request has already decided it should
+be sent, and the alternative invents a class of turn that generates an image and
+forgets to deliver it. It is not also shown *back* to the model: an image costs
+tokens by area, and a model looking at what it just described learns close to
+nothing — the case for showing one is §4.1.1's, a memory citing a photograph the
+model has not seen.
+
+The response says what kind of file it is nowhere. Measured, one endpoint
+answered with a PNG and another with a JPEG, and neither labelled which — so the
+type is read from the magic bytes (`siatt/store/dimensions.py`), beside the code
+that already reads the dimensions out of the same header. A type taken on trust
+here does not surface as a wrong row; it surfaces much later, as a picture a
+vision model refuses.
+
+**A generated file is not evidence, and the store is told so.** This is the part
+that is not plumbing. Long-term memory is Markdown a person reads and believes;
+`blobref` exists (§4.1.1) because a model that has seen the shape of a reference
+will compose a plausible one; and an observation may cite an attachment. A claim
+citing an image *Siatt invented*, filed as though somebody had taken it, is a
+fabricated exhibit — worse than a broken link, because nothing about it looks
+wrong. So the ref is written with `source = "generated"`, and `citable`
+(`siatt/memory/observation.py`) does not offer one to either observation builder.
+The earliest arrival decides, which is what stops a later upload back into the
+thread from relabelling one. It can still be sent, and sent again; what it cannot
+do is become a footnote in the corpus.
+
+Off unless an install asks, on §8.4's terms rather than §8.3's: this is not free,
+and a capability with that price attached is one an install should choose. It
+also needs `[attachments]`, since a drawing has to be kept before it can be sent
+— and `[images]` without it is a `FAIL` in `siatt doctor` rather than a note,
+because nobody turns drawing on meaning to throw the pictures away.
 
 ---
 
@@ -1429,6 +1500,10 @@ siatt/
     base.py            SearchProvider protocol + SearchResult
     brave.py           the one backend
     tool.py            web_search, and the boundary around what it returns
+  imagen/
+    base.py            ImageProvider protocol + GeneratedImage
+    openai_images.py   POST /v1/images/generations, and what it refuses to believe
+    tool.py            image_generate, and what it settles before it draws
   untrusted.py         the nonce-delimited block, used by both of the above
   memory/
     stm.py             messages, episodes, observations
@@ -1564,6 +1639,15 @@ allowed_mime = ["image/", "video/"]   # prefixes
 # max_blobs_per_run = 50              # its own budget, separate from max_per_run
 # and, under [slack]:
 # file_hosts = ["slack.com"]          # where the bot token may be sent
+
+[images]                              # optional; off by default — it is not free
+enabled  = true                       # needs [attachments] too, or nothing registers
+model    = "openai/gpt-image-2"       # the default
+base_url = "https://api.intfaucet.com/v1"   # any /v1/images/generations endpoint
+key_env  = "FAUCET_API_KEY"
+# size    = "1024x1024"               # WIDTHxHEIGHT, or the endpoint's own default
+# quality = "medium"                  # only where the endpoint has tiers at all
+# timeout_seconds = 120.0             # generation is slow; this is the whole call
 
 [llm.chat]
 kind   = "anthropic"

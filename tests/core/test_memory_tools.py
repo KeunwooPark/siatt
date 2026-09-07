@@ -949,3 +949,63 @@ async def test_an_empty_field_is_refused_by_the_schema(
 
     assert "invalid arguments" in result
     assert await store.pending_observations() == []
+
+
+# -- memory_write: what a memory may not cite --------------------------------
+
+
+async def test_a_picture_siatt_drew_itself_cannot_be_cited(memory: Memory) -> None:
+    """The corpus is Markdown a person reads and believes, and a claim citing an
+    image Siatt invented is a fabricated exhibit filed as evidence. It is not a
+    broken link somebody can puzzle out — nothing about it looks wrong."""
+    drawn = await memory.attachments.put(
+        b"\xff\xd8\xff-not-really-a-jpeg",
+        mime="image/jpeg",
+        source_name="generated",
+        scope="workspace",
+        session_id="cli:1",
+        name="a-red-circle.jpg",
+    )
+
+    result = await memory.call(
+        "memory_write",
+        {
+            "kind": "fact",
+            "subject": "Keunwoo",
+            "claim": "Keunwoo photographed the Sejong Arts Center.",
+            "attachments": [handle(drawn)],
+        },
+        session_id="cli:1",
+    )
+
+    assert "nothing to cite" in result
+    assert "queued" not in result
+    assert await memory.store.pending_observations() == []
+
+
+async def test_a_drawing_does_not_hide_the_photographs_beside_it(memory: Memory) -> None:
+    """The filter drops one row, not the conversation. A thread with a drawing
+    in it must still be able to cite what somebody actually sent."""
+    await memory.attachments.put(
+        b"\xff\xd8\xff-drawn",
+        mime="image/jpeg",
+        source_name="generated",
+        scope="workspace",
+        session_id="cli:1",
+        name="a-red-circle.jpg",
+    )
+    photograph = await sent(memory)
+
+    result = await memory.call(
+        "memory_write",
+        {
+            "kind": "fact",
+            "subject": "Keunwoo",
+            "claim": "Keunwoo photographed the Sejong Arts Center.",
+            "attachments": [handle(photograph)],
+        },
+        session_id="cli:1",
+    )
+
+    assert "queued" in result
+    assert await cited(memory) == [{"sha256": photograph, "name": "IMG_3604.jpg"}]

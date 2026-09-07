@@ -11,6 +11,7 @@ from siatt.config import (
     BrowserSettings,
     Config,
     FetchSettings,
+    ImageSettings,
     SearchSettings,
     SlackSettings,
     StoreSettings,
@@ -24,6 +25,7 @@ from siatt.doctor import (
     _attachments,
     _browser,
     _fetch,
+    _images,
     _search,
     _slack,
     diagnose,
@@ -828,3 +830,54 @@ async def test_a_healthy_attachment_store_says_so(tmp_path: Path) -> None:
     assert check is not None
     assert check.status is Status.OK
     assert "all present" in check.detail
+
+
+# -- drawing -----------------------------------------------------------------
+
+
+async def test_drawing_is_skipped_when_nobody_asked_for_it() -> None:
+    assert _images(Config()).status is Status.SKIP
+
+
+async def test_drawing_without_somewhere_to_keep_a_drawing_is_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two switches that only disagree on the turn somebody asks for a picture.
+    Nobody turns drawing on meaning to throw the pictures away."""
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    cfg = Config(images=ImageSettings(enabled=True))
+
+    check = _images(cfg)
+
+    assert check.status is Status.FAIL
+    assert "[attachments] is off" in check.detail
+
+
+async def test_drawing_says_what_it_draws_with_and_where_the_key_comes_from(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAUCET_API_KEY", "k")
+    cfg = Config(
+        attachments=AttachmentSettings(enabled=True),
+        images=ImageSettings(enabled=True, key_env="FAUCET_API_KEY", size="1024x1024"),
+    )
+
+    check = _images(cfg)
+
+    assert check.status is Status.OK
+    assert "openai/gpt-image-2" in check.detail
+    assert "FAUCET_API_KEY" in check.detail
+    assert "1024x1024" in check.detail
+
+
+async def test_drawing_without_a_key_is_a_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FAUCET_API_KEY", raising=False)
+    cfg = Config(
+        attachments=AttachmentSettings(enabled=True),
+        images=ImageSettings(enabled=True, key_env="FAUCET_API_KEY"),
+    )
+
+    check = _images(cfg)
+
+    assert check.status is Status.FAIL
+    assert "FAUCET_API_KEY is not set" in check.detail

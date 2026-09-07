@@ -1,4 +1,4 @@
-"""How big a picture is, read from the front of it.
+"""What a picture is and how big, read from the front of it.
 
 The packer budgets an image by area, and `siatt/llm/tokens.py` turns what this
 returns into a number of tokens. Only the measuring is here; what a pixel costs
@@ -19,6 +19,36 @@ import struct
 #: sit some way into the file, so this is generous -- but bounded, because the
 #: caller may be holding a video.
 HEAD_BYTES = 64 * 1024
+
+
+#: Magic bytes to mime type, for the same four formats and read the same way.
+#: The offset matters for WebP, whose marker is twelve bytes in behind a RIFF
+#: header, which is why this is a list of (offset, prefix) rather than a dict.
+_MAGIC: tuple[tuple[int, bytes, str], ...] = (
+    (0, b"\x89PNG\r\n\x1a\n", "image/png"),
+    (0, b"\xff\xd8\xff", "image/jpeg"),
+    (0, b"GIF87a", "image/gif"),
+    (0, b"GIF89a", "image/gif"),
+    (8, b"WEBP", "image/webp"),
+)
+
+
+def mime_for(data: bytes) -> str | None:
+    """What kind of picture this is, or None when it is not one we read.
+
+    Here rather than beside the code that needed it, because this is the module
+    that already knows what each of these files begins with -- and because the
+    two questions are asked about the same bytes at the same moment. Reading the
+    header twice, in two places, is how they come to disagree.
+
+    The caller is a generation endpoint that returns an image and does not say
+    which kind (`siatt/imagen/openai_images.py`). A guess there is not a wrong
+    label in a database; it is a picture a vision model later refuses.
+    """
+    return next(
+        (mime for at, prefix, mime in _MAGIC if data[at : at + len(prefix)] == prefix),
+        None,
+    )
 
 
 def dimensions(data: bytes) -> tuple[int, int] | None:

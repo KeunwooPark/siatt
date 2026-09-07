@@ -33,7 +33,7 @@ from typing import Any
 
 from siatt.core.tools import Tool, ToolContext
 from siatt.memory import blobref
-from siatt.memory.observation import citable
+from siatt.memory.observation import named
 from siatt.store import Store
 from siatt.store.blobs import Attachment, Attachments
 
@@ -168,15 +168,20 @@ async def _sendable(store: Store, attachments: Attachments, context: ToolContext
 
     The name always comes off the row. What the surface called the file is a
     fact about the upload; what the model calls it is a guess.
+
+    `named` rather than `citable`, and that is the one place this parts company
+    with `_cited`. A picture Siatt drew is a file this conversation has and can
+    be sent again; what it may not do is become a citation in the corpus, which
+    is `citable`'s business and not this one.
     """
     rows = await store.attachments_for_session(context.session_id, scope=context.scope)
-    known = citable(rows)
+    known = named(rows)
     for sha in context.surfaced:
         if sha in known:
             continue
         held = await attachments.get(sha, scope=context.scope)
         if held is not None:
-            known.update(citable([{"sha256": sha, "name": held.name, "mime": held.mime}]))
+            known.update(named([{"sha256": sha, "name": held.name, "mime": held.mime}]))
     return known
 
 

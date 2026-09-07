@@ -10,6 +10,7 @@ from siatt.config import (
     BrowserSettings,
     Config,
     FetchSettings,
+    ImageSettings,
     SearchSettings,
     SlackSettings,
     TaskSettings,
@@ -513,3 +514,69 @@ def test_the_destinations_survive_the_round_trip(tmp_path: Path) -> None:
     write_config(Config(tasks=TaskSettings(destinations={"ai-news": "C0AI"})), path)
 
     assert load_config(path).tasks.destinations == {"ai-news": "C0AI"}
+
+
+# -- drawing -----------------------------------------------------------------
+
+
+def test_drawing_is_off_until_an_install_asks_for_it() -> None:
+    """`[browser]`'s posture, for `[browser]`'s reason: it is not free. Until an
+    install chooses it the tool is not registered, so the model never offers a
+    picture this install cannot make."""
+    assert not Config().images.configured
+    assert Config(images=ImageSettings(enabled=True)).images.configured
+
+
+def test_turning_drawing_on_is_one_line_because_the_model_has_a_default() -> None:
+    """The endpoint does not: an install points this at the gateway it already
+    uses, rather than inheriting one nobody can read off the file."""
+    images = ImageSettings(enabled=True)
+
+    assert images.model == "openai/gpt-image-2"
+    assert images.base_url is None
+    assert images.quality is None, "not a parameter every endpoint behind this shape has"
+
+
+def test_an_unconfigured_images_section_is_not_written(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    write_config(Config(), path)
+
+    assert "[images]" not in path.read_text()
+
+
+def test_a_configured_drawing_survives_the_round_trip(tmp_path: Path) -> None:
+    cfg = Config(
+        images=ImageSettings(
+            enabled=True,
+            model="google/gemini-3.1-flash-image",
+            base_url="https://api.intfaucet.com/v1",
+            key_env="FAUCET_API_KEY",
+            size="1024x1024",
+        )
+    )
+    path = tmp_path / "config.toml"
+    write_config(cfg, path)
+
+    assert load_config(path) == cfg
+
+
+def test_a_drawing_key_is_never_written_into_the_config(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    write_config(Config(images=ImageSettings(enabled=True, key_env="FAUCET_API_KEY")), path)
+
+    written = path.read_text()
+    assert "FAUCET_API_KEY" in written
+    assert "fct_" not in written
+
+
+def test_drawing_says_which_variable_it_needs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FAUCET_API_KEY", raising=False)
+    images = ImageSettings(enabled=True, key_env="FAUCET_API_KEY")
+
+    with pytest.raises(ConfigError, match="FAUCET_API_KEY"):
+        images.api_key()
+
+
+def test_a_timeout_of_zero_is_refused() -> None:
+    with pytest.raises(ValidationError):
+        ImageSettings(enabled=True, timeout_seconds=0)
