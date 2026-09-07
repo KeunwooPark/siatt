@@ -115,14 +115,24 @@ class Message(BaseModel):
         return cls(role="assistant", content=(TextBlock(text=text),))
 
     @classmethod
-    def tool_results(cls, results: list[ToolResultBlock]) -> Self:
+    def tool_results(
+        cls, results: list[ToolResultBlock], *, images: Sequence[ImageBlock] = ()
+    ) -> Self:
         """Bundle tool results into a single turn.
 
         Deliberately one message holding every result: both provider families
         expect the results for one assistant turn to arrive together, and
         splitting them produces a hard 400 on Anthropic-compatible endpoints.
+
+        Images come after the results, and the order is the contract. A tool
+        result is text (`ToolHandler` returns `str`), so a picture a tool found
+        rides on the turn that carries its result rather than inside it —
+        Anthropic requires the `tool_result` blocks to lead a user turn, and the
+        OpenAI shape splits the same message into `role: "tool"` entries
+        followed by a user turn holding the parts. Both are already written that
+        way; this is what gives them something to carry.
         """
-        return cls(role="user", content=tuple(results))
+        return cls(role="user", content=(*results, *images))
 
     @property
     def text(self) -> str:

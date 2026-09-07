@@ -354,6 +354,26 @@ where there is a model to tell, and dropped where there is not: an extraction
 runs hours after the conversation ended, and a claim with no picture beats no
 claim at all.
 
+**Reading one back shows the picture, not its size.** `memory_read` resolves
+every reference in the document it returns and says what each one is and whether
+it is still there — and for an image still in scope it also puts the picture in
+the turn. Without that half, a photograph sent this morning was looked at and
+the same photograph reached a week later through the memory citing it was a mime
+type and a byte count, which reads as Siatt having forgotten something it is
+still holding.
+
+A tool result is text — `ToolHandler` returns `str` — so the image cannot come
+back *inside* the result. It rides on the turn that carries it: the tool records
+what it surfaced, and the loop puts those blocks on the tool-result message,
+after the results. Both families already take that shape, which is why this is
+not a change to the compat layer — Anthropic wants a user turn whose
+`tool_result` blocks lead, and the OpenAI mapping splits the same message into
+`tool` entries followed by a user turn of parts. Hydration and the scope check
+are the ones an upload goes through, so a memory that may be read can cite a blob
+that may not, and that one stays a sentence. Bounded per turn rather than per
+call: a turn that opens four memories citing ten photographs each is what the
+bound is for, and past it the note names the file and says it was not shown.
+
 The reference is not trusted because a model wrote it. Consolidation reads
 memory files and writes memory files, so once one of these exists the model has
 seen the shape — and a model that has seen the shape will compose a plausible
@@ -910,7 +930,7 @@ Pre-injection covers the common case at zero added latency. It will still miss.
 So the agent also gets:
 
 - `memory_search(query, scope_hint, limit)` → ranked snippets with IDs
-- `memory_read(memory_id)` → the full file
+- `memory_read(memory_id)` → the full file, plus what its attachments are and the images among them
 - `memory_write(kind, subject, claim, attachments)` → enqueue an observation (never a direct write)
 
 Do not pick one strategy. Injection handles the 90% case; tools handle the tail.

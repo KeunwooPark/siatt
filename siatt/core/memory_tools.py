@@ -30,7 +30,7 @@ from siatt.memory.observation import OBSERVATION_KINDS, Cited, citable
 from siatt.memory.retrieve import Retriever, permits, render_snippet
 from siatt.memory.subject import normalize_subject
 from siatt.store import Store
-from siatt.store.blobs import Attachments
+from siatt.store.blobs import Attachment, Attachments
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +47,14 @@ WROTE = (
 #: and small enough that a turn cannot quietly attach a conversation's worth of
 #: photographs to one sentence.
 MAX_CITED = 4
+
+#: Pictures one turn may put in front of the model by reading memories.
+#:
+#: A bound rather than a policy: an image costs tokens by area, a memory may
+#: cite several, and a turn may read several memories. Past this the note still
+#: names the file and says it was not shown, which is a model that knows what it
+#: has not seen rather than one that thinks the picture is gone.
+MAX_SHOWN = 4
 
 
 def memory_tools(
@@ -147,7 +155,7 @@ def _search_tool(retriever: Retriever) -> Tool:
 # -- memory_read -------------------------------------------------------------
 
 
-async def _attachment_note(body: str, attachments: Attachments | None, scope: str) -> str:
+async def _attachment_note(body: str, attachments: Attachments | None, context: ToolContext) -> str:
     """What the store knows about the files this memory points at.
 
     The link text already carries a name -- that is why references are written
@@ -156,6 +164,14 @@ async def _attachment_note(body: str, attachments: Attachments | None, scope: st
     still there. A memory outlives the conversation it came from and can outlive
     the attachment too, and "the photograph this cites is gone" is a fact the
     model should have before it describes one.
+
+    It also *shows* the pictures. A memory that cites a photograph could say its
+    mime type and its size and never put it in front of the model, so a
+    photograph sent this morning was looked at and the same photograph reached
+    through the memory that cites it was a byte count -- which reads, to whoever
+    asked, as Siatt having forgotten something it is still holding. What this
+    writes into `context.surfaced` is what the agent loop turns into image
+    blocks on the turn carrying this result.
 
     Scoped, like every attachment read. A memory visible from here may cite a
     blob that is not, and the honest answer for that one is the same as for a
@@ -166,12 +182,41 @@ async def _attachment_note(body: str, attachments: Attachments | None, scope: st
         return ""
     lines = []
     for sha in wanted:
-        held = await attachments.get(sha, scope=scope)
+        held = await attachments.get(sha, scope=context.scope)
         if held is None:
-            lines.append(f"- {sha[:12]}… — no longer stored")
-        else:
-            lines.append(f"- {sha[:12]}… — {held.mime}, {held.size:,} bytes")
+            lines.append(f"- {blobref.handle(sha)}… — no longer stored")
+            continue
+        line = f"- {blobref.handle(sha)}… — {held.mime}, {held.size:,} bytes"
+        lines.append(line + _shows(held, context))
     return "\n\n[attachments this memory points at]\n" + "\n".join(lines)
+
+
+def _shows(held: Attachment, context: ToolContext) -> str:
+    """Whether this one is being put in the turn, and what to say if not.
+
+    The cap is per turn rather than per call, counted off the turn's own
+    notebook: a model that reads four memories citing ten photographs each is
+    the case this protects the context window from, and a limit on one call
+    would not see the other three.
+
+    Said out loud either way. "Shown below" is what stops the model describing
+    a picture it was only told the size of, and the sentence for one held back
+    is what stops it concluding the file is gone.
+    """
+    if not held.is_image:
+        # Stored, referenced, and unreadable by anything -- the same answer the
+        # attachment note at ingress gives for a video, for the same reason.
+        return ", which nothing can read"
+    if held.sha256 in context.surfaced:
+        # Already in this turn, on the message that carried the result which
+        # first reached it. "Below" would be a lie by one message, and the
+        # model looking for a picture that is above it is the model concluding
+        # it was not sent one.
+        return ", shown earlier in this turn"
+    if len(context.surfaced) >= MAX_SHOWN:
+        return f", not shown — this turn has already shown {MAX_SHOWN} pictures"
+    context.surfaced.append(held.sha256)
+    return ", shown below"
 
 
 def _read_tool(memory: MemoryStore, attachments: Attachments | None = None) -> Tool:
@@ -200,7 +245,7 @@ def _read_tool(memory: MemoryStore, attachments: Attachments | None = None) -> T
         # may not see did not contribute to its answer, and recording it here
         # would put its id in front of whoever reads the feedback.
         context.recalled.append(memory_id)
-        return raw + await _attachment_note(doc.body, attachments, context.scope)
+        return raw + await _attachment_note(doc.body, attachments, context)
 
     return Tool(
         name="memory_read",
