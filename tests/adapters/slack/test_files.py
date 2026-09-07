@@ -226,7 +226,10 @@ async def test_video_is_stored_and_said_to_be_unread(store: Store, tmp_path: Pat
     prepared = await fetcher.collect(event(clip))
 
     assert await attachments.get(hashlib.sha256(MP4).hexdigest(), scope="workspace") is not None
-    assert "clip.mp4 — stored, but Siatt cannot read this kind of file" in prepared.text
+    handle = hashlib.sha256(MP4).hexdigest()[:12]
+    assert f"clip.mp4 (id {handle}) — stored, but Siatt cannot read this kind of file" in (
+        prepared.text
+    )
 
 
 # -- failing without failing the turn ----------------------------------------
@@ -294,8 +297,10 @@ async def test_the_note_is_appended_to_what_the_person_said(store: Store, tmp_pa
 
     prepared = await fetcher.collect(event(png()))
 
+    handle = hashlib.sha256(PNG).hexdigest()[:12]
     assert prepared.text == (
-        "what's in this?\n\n[attached]\n- shot.png — attached below, and Siatt can see it"
+        f"what's in this?\n\n[attached]\n- shot.png (id {handle}) — "
+        "attached below, and Siatt can see it"
     )
 
 
@@ -306,7 +311,10 @@ async def test_a_file_with_no_comment_is_the_whole_text(store: Store, tmp_path: 
 
     prepared = await fetcher.collect(silent)
 
-    assert prepared.text == "[attached]\n- shot.png — attached below, and Siatt can see it"
+    handle = hashlib.sha256(PNG).hexdigest()[:12]
+    assert prepared.text == (
+        f"[attached]\n- shot.png (id {handle}) — attached below, and Siatt can see it"
+    )
 
 
 async def test_nothing_attached_says_nothing() -> None:

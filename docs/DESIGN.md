@@ -237,6 +237,7 @@ CREATE TABLE observations (
   confidence    REAL NOT NULL,
   scope         TEXT NOT NULL,
   source_refs   TEXT NOT NULL,          -- JSON array of message ids / permalinks
+  attachments   TEXT NOT NULL,          -- JSON array of {sha256, name} the claim is about
   state         TEXT NOT NULL,          -- pending | promoted | discarded
   created_at    TEXT NOT NULL
 );
@@ -337,6 +338,21 @@ so the corpus stays Markdown a person reads on GitHub and nothing mistakes the
 target for a URL to fetch. The link *text* carries the name, which is why an
 explanation citing such a memory reads as a filename rather than as sixty-four
 characters of hash.
+
+**A reference is written by naming, never by typing a digest.** Sixty-four
+characters is not something to ask a model to copy — the argument `episode_close`
+makes for numbering transcript lines rather than quoting message ULIDs. So an
+attachment is shown with a *handle*, the first twelve characters of its digest,
+in the note that already tells a turn what arrived; `memory_write` takes handles
+beside the claim, an extraction cites them the same way, and both resolve against
+the attachments of the conversation they are in. What resolves is stored on the
+observation with the filename beside it (§4.1), and `promote` is shown the
+resolved lines when it plans that group. So the model names a candidate and
+deterministic code turns it into a digest — the same posture as `scope`, and for
+the same reason. A handle that resolves to nothing or to two blobs is refused
+where there is a model to tell, and dropped where there is not: an extraction
+runs hours after the conversation ended, and a claim with no picture beats no
+claim at all.
 
 The reference is not trusted because a model wrote it. Consolidation reads
 memory files and writes memory files, so once one of these exists the model has
@@ -895,7 +911,7 @@ So the agent also gets:
 
 - `memory_search(query, scope_hint, limit)` → ranked snippets with IDs
 - `memory_read(memory_id)` → the full file
-- `memory_write(kind, subject, claim)` → enqueue an observation (never a direct write)
+- `memory_write(kind, subject, claim, attachments)` → enqueue an observation (never a direct write)
 
 Do not pick one strategy. Injection handles the 90% case; tools handle the tail.
 Note that `memory_write` enqueues into `observations` — the agent proposes, the

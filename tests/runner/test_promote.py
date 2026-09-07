@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from siatt.config import PromoteSettings
+from siatt.config import AttachmentSettings, PromoteSettings
 from siatt.llm.registry import ModelRole, ProviderRegistry
 from siatt.llm.tokens import HeuristicTokenizer
 from siatt.llm.types import ChatRequest, ChatResponse, Delta, Message, Usage
@@ -21,6 +21,7 @@ from siatt.memory.gitcmd import GitRepo
 from siatt.memory.index import MemoryIndex
 from siatt.memory.ltm import MemoryStore
 from siatt.memory.manifest import Manifest
+from siatt.memory.observation import Cited
 from siatt.memory.retrieve import Retriever
 from siatt.runner.promote import Promoter
 from siatt.store import Store
@@ -105,8 +106,25 @@ async def observe(
     *,
     scope: str = "workspace",
     kind: str = "fact",
+    attachments: Sequence[Cited] = (),
 ) -> str:
-    return await store.add_observation(subject=subject, claim=claim, kind=kind, scope=scope)
+    return await store.add_observation(
+        subject=subject, claim=claim, kind=kind, scope=scope, attachments=attachments
+    )
+
+
+async def kept(store: Store, tmp_path: Path, *, name: str = "whiteboard.png") -> Cited:
+    """A real blob, so the patch validator has something to accept."""
+    files = AttachmentSettings(enabled=True).build(store, tmp_path / "siatt.db")
+    sha = await files.put(
+        b"\x89PNG\r\n\x1a\n" + name.encode(),
+        mime="image/png",
+        source_name="slack",
+        scope="workspace",
+        session_id="s1",
+        name=name,
+    )
+    return Cited(sha256=sha, name=name)
 
 
 def creating(title: str, body: str, *, memory_type: str = "fact") -> str:
@@ -152,6 +170,94 @@ def files_with_id(clone: Path, memory_id: str) -> list[str]:
         if doc.id == memory_id:
             found.append(path.relative_to(clone).as_posix())
     return found
+
+
+# -- attachments -------------------------------------------------------------
+
+
+async def test_the_plan_prompt_offers_what_the_observations_cited(
+    clone: Path, store: Store, tmp_path: Path
+) -> None:
+    """A model cannot write a reference to a file nobody told it about, and a
+    digest is not something it may be asked to invent."""
+    photo = await kept(store, tmp_path)
+    await observe(store, "Priya", "Priya drew the release plan.", attachments=[photo])
+    provider = Scripted("[]")
+
+    await (await promoter_for(clone, store, provider)).run()
+
+    prompt = provider.prompts[0]
+    assert f"[a1] whiteboard.png — siatt://blob/{photo.sha256}" in prompt
+    assert "(attachments: a1)" in prompt, "and the claim says which one is its own"
+
+
+async def test_an_attachment_collected_since_is_not_offered(
+    clone: Path, store: Store, tmp_path: Path
+) -> None:
+    """`forget` may have taken the bytes between the conversation and this run.
+    Offering it would buy a sentence written around a link about to be unwrapped
+    — evidence claimed and then removed."""
+    photo = await kept(store, tmp_path)
+    await observe(store, "Priya", "Priya drew the release plan.", attachments=[photo])
+    # As `forget` collects one: the refs go with the conversation, and the
+    # blob is reclaimed once nothing holds it.
+    await store.write("DELETE FROM attachment_refs WHERE sha256 = ?", (photo.sha256,))
+    await store.delete_attachment(photo.sha256)
+    provider = Scripted("[]")
+
+    await (await promoter_for(clone, store, provider)).run()
+
+    assert "siatt://blob/" not in provider.prompts[0]
+    assert "(attachments:" not in provider.prompts[0]
+
+
+async def test_a_cited_attachment_reaches_the_committed_memory(
+    clone: Path, store: Store, tmp_path: Path
+) -> None:
+    """End to end, and the acceptance criterion for #243: a photograph sent in
+    a conversation is a link in a file on the branch."""
+    photo = await kept(store, tmp_path)
+    await observe(store, "Priya", "Priya drew the release plan.", attachments=[photo])
+    body = f"Priya drew the release plan on [whiteboard.png](siatt://blob/{photo.sha256})."
+    provider = Scripted(creating("The release plan", body))
+
+    result = await (await promoter_for(clone, store, provider)).run()
+
+    assert result.changed
+    written = (clone / "memory/facts/the-release-plan.md").read_text()
+    assert f"[whiteboard.png](siatt://blob/{photo.sha256})" in written
+
+
+async def test_a_digest_the_plan_invented_is_still_unwrapped(
+    clone: Path, store: Store, tmp_path: Path
+) -> None:
+    """Offering real ones does not make the validator's job optional: a model
+    that has seen the shape composes another, and the memory keeps the prose."""
+    photo = await kept(store, tmp_path)
+    await observe(store, "Priya", "Priya drew the release plan.", attachments=[photo])
+    invented = "b" * 64
+    body = f"Priya drew it on [a whiteboard](siatt://blob/{invented})."
+    provider = Scripted(creating("The release plan", body))
+
+    await (await promoter_for(clone, store, provider)).run()
+
+    written = (clone / "memory/facts/the-release-plan.md").read_text()
+    assert invented not in written
+    assert "Priya drew it on a whiteboard." in written
+
+
+async def test_observations_with_no_attachments_say_nothing_about_them(
+    clone: Path, store: Store
+) -> None:
+    """Most groups. The prompt should not grow a section explaining that there
+    are no files, on every run, forever."""
+    await observe(store, "Priya", "Priya owns deploys.")
+    provider = Scripted("[]")
+
+    await (await promoter_for(clone, store, provider)).run()
+
+    assert "(attachments:" not in provider.prompts[0]
+    assert '"attachments": []' in provider.prompts[0]
 
 
 # -- the ordinary path -------------------------------------------------------

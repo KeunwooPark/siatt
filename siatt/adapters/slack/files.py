@@ -41,6 +41,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from siatt.core.events import Attached, InboundEvent
+from siatt.memory import blobref
 from siatt.store.blobs import AttachmentError, Attachments
 
 log = logging.getLogger(__name__)
@@ -138,9 +139,24 @@ def note(stored: list[Stored]) -> str:
     """
     if not stored:
         return ""
-    lines = [f"- {_shown(item.name)} — {_became(item)}" for item in stored]
+    lines = [f"- {_shown(item.name)}{_id(item)} — {_became(item)}" for item in stored]
     head = "[attached]" if len(stored) == 1 else f"[attached: {len(stored)} files]"
     return "\n".join([head, *lines])
+
+
+def _id(item: Stored) -> str:
+    """The handle a file is cited by, for the ones there is something to cite.
+
+    A memory can point at an attachment, and the model is what decides that one
+    is worth pointing at — which it cannot do without a name for it. This is
+    that name (`siatt/memory/blobref.py`), and it is in the note because the
+    note is already the one place a turn is told what arrived.
+
+    Nothing that was not kept gets one. A handle for bytes on nobody's disk is
+    an invitation to cite a file that does not exist, and the note's next clause
+    is about to say it was not stored.
+    """
+    return f" (id {blobref.handle(item.sha256)})" if item.sha256 else ""
 
 
 def _became(item: Stored) -> str:

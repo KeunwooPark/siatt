@@ -17,7 +17,7 @@ from ulid import ULID
 from siatt.errors import SiattError, StoreError
 from siatt.llm.cost import CallRecord
 from siatt.llm.types import ContentBlock, Message, starts_turn
-from siatt.memory.observation import ObservationDraft
+from siatt.memory.observation import Cited, ObservationDraft
 from siatt.memory.subject import normalize_subject
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
@@ -519,6 +519,42 @@ class Store:
                 rows = await cur.fetchall()
             return frozenset(str(row["sha256"]) for row in rows)
 
+    async def attachments_for_session(self, session_id: str, *, scope: str) -> list[dict[str, Any]]:
+        """Everything that arrived in one conversation, oldest first.
+
+        What a model may cite. `memory_write` resolves the handle it was given
+        against this, and so does an extraction, which is what stops either
+        from citing a photograph out of somebody else's conversation: an
+        attachment it cannot name here is one it cannot put in a memory.
+
+        Scoped in the query, like `attachments_for_message`, and matched on the
+        ref's own `session_id` as well as its message's. A ref is written while
+        the file is being fetched, which is before the turn appends the message
+        it came on -- so the ref carries the session and the message id arrives
+        later, or not at all if the turn failed.
+
+        One row per blob. The same picture posted twice in one thread is two
+        arrivals and one thing to cite; `MIN(r.created_at)` picks which
+        arrival's name is shown, and SQLite's bare-column rule -- documented,
+        for a query with exactly one `MIN` -- is what makes the rest of the row
+        come from that same arrival rather than from an arbitrary one.
+        """
+        async with self._serial:
+            async with self._conn.execute(
+                "SELECT a.sha256, a.mime, a.bytes, a.width, a.height, r.name,"
+                "       MIN(r.created_at) AS created_at"
+                " FROM attachment_refs r"
+                " JOIN attachments a ON a.sha256 = r.sha256"
+                " LEFT JOIN messages m ON m.id = r.message_id"
+                " WHERE (r.session_id = ? OR m.session_id = ?)"
+                "   AND (r.scope = 'workspace' OR r.scope = ?)"
+                " GROUP BY a.sha256"
+                " ORDER BY created_at, a.sha256",
+                (session_id, session_id, scope),
+            ) as cur:
+                rows = await cur.fetchall()
+            return [dict(row) for row in rows]
+
     async def attachments_for_message(self, message_id: str, *, scope: str) -> list[dict[str, Any]]:
         """What came attached to one message, filtered before it is returned.
 
@@ -802,6 +838,7 @@ class Store:
         episode_id: str | None = None,
         confidence: float = 0.7,
         source_refs: Sequence[str] = (),
+        attachments: Sequence[Cited] = (),
     ) -> str:
         """Record a candidate fact. Nothing durable happens until `promote` runs."""
         async with self._serial:
@@ -813,6 +850,7 @@ class Store:
                     scope=scope,
                     confidence=confidence,
                     source_refs=tuple(source_refs),
+                    attachments=tuple(attachments),
                 ),
                 session_id=session_id,
                 episode_id=episode_id,
@@ -838,8 +876,8 @@ class Store:
         await self._conn.execute(
             "INSERT INTO observations"
             " (id, episode_id, session_id, subject, claim, kind, confidence, scope,"
-            "  source_refs, state, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+            "  source_refs, attachments, state, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
             (
                 observation_id,
                 episode_id,
@@ -850,6 +888,12 @@ class Store:
                 draft.confidence,
                 draft.scope,
                 json_dumps(list(draft.source_refs)),
+                # Stored with the name, not just the digest. `promote` writes
+                # the link text months later, out of whatever this row kept:
+                # the ref this was resolved from goes with the message it
+                # arrived on, and a memory saying `[an attachment](...)` has
+                # lost the only part of the reference a person reads.
+                json_dumps([{"sha256": c.sha256, "name": c.name} for c in draft.attachments]),
                 _now(),
             ),
         )

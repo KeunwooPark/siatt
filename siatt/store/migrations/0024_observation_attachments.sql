@@ -1,0 +1,24 @@
+-- What an observation was looking at when it was made.
+--
+-- #234 gave long-term memory a way to point at a file --
+-- `[shot.png](siatt://blob/<sha256>)` -- and gave the patch validator a way to
+-- catch a pointer a model invented. What it never gave anything was a way to
+-- write a real one. The reference survives the whole distance from a photograph
+-- arriving in a channel to a sentence in a journal only if each leg carries it,
+-- and this table is the leg in the middle: an observation is where a claim
+-- waits, sometimes for hours, between the conversation that produced it and the
+-- `promote` run that writes it down.
+--
+-- A JSON array of `{"sha256", "name"}`, the way `source_refs` is a JSON array of
+-- message ids. The name is denormalized on purpose. It is what the link text
+-- says -- `[IMG_3604.jpg](siatt://blob/...)` rather than sixty-four characters
+-- of hash in the middle of a sentence -- and the row it was copied from is
+-- deleted with the message it arrived on, which `clear_session` can do long
+-- before `promote` runs. The digest resolves; the name is what a person reads.
+--
+-- No foreign key to `attachments`, and deliberately none. This records what a
+-- conversation cited, which stays true after `forget` reclaims the bytes; the
+-- patch validator is what decides whether a reference may still be written, and
+-- it asks that question at the moment of writing rather than trusting a
+-- constraint that was checked hours earlier.
+ALTER TABLE observations ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';
