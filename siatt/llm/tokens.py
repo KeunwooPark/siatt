@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from siatt.llm.images import DEFAULT_IMAGE_POLICY, ImagePolicy, dimensions
 from siatt.llm.types import (
     ImageBlock,
     Message,
@@ -25,16 +26,6 @@ MESSAGE_OVERHEAD_TOKENS = 4
 #: Tool definitions are serialized into the prompt; their JSON schema costs
 #: roughly this much per character.
 _ASCII_TOKENS_PER_CHAR = 0.25
-
-#: What one image can cost at most. Both provider families resize anything
-#: larger down to roughly 1568px on the long edge before charging for it, so
-#: this is a real ceiling rather than a guess -- which is what makes it safe to
-#: charge it for an image whose header we could not read.
-MAX_IMAGE_TOKENS = 1_600
-
-#: The divisor both families document: an image costs about its area in pixels
-#: over this.
-PIXELS_PER_TOKEN = 750
 
 #: Non-ASCII text (CJK especially) tokenizes far denser than Latin script.
 #: One token per character over-estimates for accented Latin and under-estimates
@@ -90,19 +81,18 @@ def default_tokenizer() -> Tokenizer:
         return HeuristicTokenizer()
 
 
-def image_tokens(width: int | None, height: int | None) -> int:
-    """What one image costs, rounded against us.
-
-    Unknown dimensions cost the ceiling. This module's rule is that
-    over-counting wastes a little context and under-counting ends the turn, and
-    an image is the block where that difference is three orders of magnitude.
-    """
-    if width is None or height is None or width <= 0 or height <= 0:
-        return MAX_IMAGE_TOKENS
-    return min(MAX_IMAGE_TOKENS, max(1, -(-width * height // PIXELS_PER_TOKEN)))
+def image_tokens(
+    width: int | None, height: int | None, policy: ImagePolicy = DEFAULT_IMAGE_POLICY
+) -> int:
+    """Estimate the locally bounded representation using the endpoint policy."""
+    return policy.tokens(width, height)
 
 
-def count_message(msg: Message, tokenizer: Tokenizer) -> int:
+def count_message(
+    msg: Message,
+    tokenizer: Tokenizer,
+    image_policies: tuple[ImagePolicy, ...] = (DEFAULT_IMAGE_POLICY,),
+) -> int:
     total = MESSAGE_OVERHEAD_TOKENS
     for block in msg.content:
         match block:
@@ -111,11 +101,7 @@ def count_message(msg: Message, tokenizer: Tokenizer) -> int:
             case ThinkingBlock():
                 total += tokenizer.count(block.thinking)
             case ImageBlock():
-                # By area, not by the length of its JSON. A picture serializes
-                # to a hash and a mime type — about thirty tokens — and costs
-                # up to sixteen hundred, so counting it as text is how a
-                # context that looked like it fit arrives as a 400.
-                total += image_tokens(block.width, block.height)
+                total += max(p.tokens(*dimensions(block)) for p in image_policies)
             case ToolUseBlock():
                 total += tokenizer.count(block.name) + tokenizer.count(repr(block.input))
             case ToolResultBlock():

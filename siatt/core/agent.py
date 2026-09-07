@@ -12,6 +12,7 @@ from time import monotonic
 from siatt.core.context import ContextPacker, PackedContext, PackTrace
 from siatt.core.tools import ToolContext, ToolRegistry
 from siatt.llm.base import StreamAccumulator
+from siatt.llm.images import DEFAULT_IMAGE_POLICY
 from siatt.llm.registry import ModelRole, ProviderRegistry
 from siatt.llm.types import (
     ChatRequest,
@@ -364,6 +365,10 @@ class Agent:
             history = await self._hydrate(history, scope)
             tools = self._tools.defs()
             packed = self._packer.pack(
+                image_policies=tuple(
+                    getattr(p, "image_policy", DEFAULT_IMAGE_POLICY)
+                    for p in self._registry.chain(ModelRole.CHAT)
+                ),
                 system_prompt=system_prompt,
                 pinned=pinned,
                 retrieved=retrieved,
@@ -575,6 +580,10 @@ class Agent:
         """
         history = await self._store.recent_messages(session_id, self.config.history_limit)
         packed = self._packer.pack(
+            image_policies=tuple(
+                getattr(p, "image_policy", DEFAULT_IMAGE_POLICY)
+                for p in self._registry.chain(ModelRole.CHAT)
+            ),
             system_prompt=system_prompt,
             pinned=pinned,
             retrieved=retrieved,

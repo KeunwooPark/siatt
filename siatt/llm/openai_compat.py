@@ -14,7 +14,7 @@ import httpx
 
 from siatt.errors import ProviderProtocolError
 from siatt.llm.base import HTTPProvider, collect
-from siatt.llm.images import described, encoded, sendable
+from siatt.llm.images import ImagePolicy, described, encoded, prepare, sendable
 from siatt.llm.types import (
     ChatRequest,
     ChatResponse,
@@ -56,6 +56,7 @@ class OpenAICompatProvider(HTTPProvider):
         client: httpx.AsyncClient | None = None,
         extra_headers: dict[str, str] | None = None,
         supports_images: bool = True,
+        image_policy: ImagePolicy | None = None,
     ) -> None:
         headers = {
             "authorization": f"Bearer {api_key}",
@@ -70,6 +71,7 @@ class OpenAICompatProvider(HTTPProvider):
             timeout=timeout,
             client=client,
             supports_images=supports_images,
+            image_policy=image_policy,
         )
         self._embedding_dimensions = embedding_dimensions
 
@@ -156,6 +158,7 @@ class OpenAICompatProvider(HTTPProvider):
             parts.append({"type": "text", "text": text})
         for block in images:
             if sendable(block, self.supports_images):
+                block = prepare(block, self.image_policy)
                 parts.append(
                     {
                         "type": "image_url",

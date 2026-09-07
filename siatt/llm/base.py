@@ -17,6 +17,7 @@ from siatt.errors import (
     RateLimitError,
     TransientError,
 )
+from siatt.llm.images import DEFAULT_IMAGE_POLICY, ImagePolicy
 from siatt.llm.types import (
     ChatRequest,
     ChatResponse,
@@ -99,10 +100,12 @@ class HTTPProvider:
         timeout: httpx.Timeout | float | None = None,
         client: httpx.AsyncClient | None = None,
         supports_images: bool = True,
+        image_policy: ImagePolicy | None = None,
     ) -> None:
         self.name = name
         self.model = model
         self.supports_images = supports_images
+        self.image_policy = image_policy or DEFAULT_IMAGE_POLICY
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -197,6 +200,14 @@ class HTTPProvider:
                 provider=self.name,
                 status=status,
                 retry_after=retry_after,
+            )
+        if status == 400 and "activation-safe prefill limit" in lowered:
+            return LLMError(
+                f"Image exceeds endpoint media limit: {snippet}. "
+                "Lower image_policy.max_edge or image_policy.max_pixels for this provider "
+                "and retry, or send a smaller image.",
+                provider=self.name,
+                status=status,
             )
         if any(marker in lowered for marker in _OVERFLOW_MARKERS):
             return ContextOverflowError(

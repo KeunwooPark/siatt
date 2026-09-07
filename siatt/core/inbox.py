@@ -23,6 +23,7 @@ from typing import Any
 from siatt.core.backoff import Backoff
 from siatt.core.drain import Drainer
 from siatt.core.events import EventError, InboundEvent
+from siatt.errors import LLMError
 from siatt.store import Store
 
 log = logging.getLogger(__name__)
@@ -157,7 +158,7 @@ class Inbox:
         """Record a failed delivery. False once the row is dead-lettered."""
         reason = f"{type(error).__name__}: {error}" if isinstance(error, BaseException) else error
         delay = self._backoff.delay_after(item.attempts)
-        if delay is None:
+        if delay is None or (isinstance(error, LLMError) and not error.retryable):
             log.error("inbox %s failed %d time(s), giving up: %s", item.id, item.attempts, reason)
             await self._store.fail_inbox(item.id, error=reason)
             return False

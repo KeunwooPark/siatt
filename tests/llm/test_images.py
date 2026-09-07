@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import base64
+from io import BytesIO
 from typing import Any
 
 import pytest
+from PIL import Image
 
 from siatt.llm.anthropic_compat import AnthropicCompatProvider
+from siatt.llm.images import DEFAULT_IMAGE_POLICY
 from siatt.llm.openai_compat import OpenAICompatProvider
-from siatt.llm.tokens import MAX_IMAGE_TOKENS, HeuristicTokenizer, count_message, image_tokens
+from siatt.llm.tokens import HeuristicTokenizer, count_message, image_tokens
 from siatt.llm.types import ChatRequest, ImageBlock, Message, TextBlock, ToolResultBlock
 
-PIXELS = b"\x89PNG\r\n\x1a\n" + b"not really a png"
+_output = BytesIO()
+Image.new("RGB", (800, 600)).save(_output, "PNG")
+PIXELS = _output.getvalue()
 
 
 def block(**kwargs: Any) -> ImageBlock:
@@ -166,7 +171,7 @@ def test_a_format_no_model_takes_is_described(store: None = None) -> None:
 
 def test_an_image_is_counted_by_area_not_by_its_json() -> None:
     """A picture serializes to a hash and a mime type. Counted as text it costs
-    about thirty tokens and actually costs up to sixteen hundred, which is how
+    about thirty tokens and actually costs hundreds or thousands, which is how
     a context that looked like it fit arrives as a 400."""
     counted = count_message(Message(role="user", content=(block(),)), HeuristicTokenizer())
 
@@ -174,14 +179,12 @@ def test_an_image_is_counted_by_area_not_by_its_json() -> None:
 
 
 def test_dimensions_nobody_could_read_cost_the_ceiling() -> None:
-    assert image_tokens(None, None) == MAX_IMAGE_TOKENS
-    assert image_tokens(0, 100) == MAX_IMAGE_TOKENS
+    assert image_tokens(None, None) == DEFAULT_IMAGE_POLICY.tokens(None, None)
+    assert image_tokens(0, 100) == DEFAULT_IMAGE_POLICY.tokens(None, None)
 
 
-def test_an_enormous_image_is_capped_at_what_a_provider_would_charge() -> None:
-    """Both families resize before charging, so the ceiling is real rather than
-    a guess — which is what makes it safe to charge for an unknown one."""
-    assert image_tokens(6000, 4000) == MAX_IMAGE_TOKENS
+def test_large_image_estimate_uses_local_bounds() -> None:
+    assert image_tokens(6000, 4000) <= DEFAULT_IMAGE_POLICY.tokens(None, None)
 
 
 # -- persistence -------------------------------------------------------------

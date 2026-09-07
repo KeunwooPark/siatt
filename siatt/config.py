@@ -30,6 +30,7 @@ from siatt.fetch.client import WebFetcher
 from siatt.llm.anthropic_compat import AnthropicCompatProvider
 from siatt.llm.base import LLMProvider
 from siatt.llm.cost import CostMeter, Price, PriceBook
+from siatt.llm.images import ImagePolicy
 from siatt.llm.openai_compat import OpenAICompatProvider
 from siatt.llm.registry import ModelRole, ProviderRegistry, RetryPolicy
 from siatt.memory.salience import Decay
@@ -100,6 +101,7 @@ class ProviderConfig(BaseModel):
     #: endpoint — a local server, an older model — and a picture in the thread
     #: becomes a sentence saying so instead of a 400 halfway through the turn.
     vision: bool = True
+    image_policy: ImagePolicy = Field(default_factory=ImagePolicy)
     fallbacks: list[ProviderConfig] = Field(default_factory=list)
 
     def api_key(self) -> str:
@@ -120,6 +122,7 @@ class ProviderConfig(BaseModel):
                 api_key=self.api_key(),
                 base_url=self.base_url or "https://api.anthropic.com/v1",
                 supports_images=self.vision,
+                image_policy=self.image_policy,
             )
         return OpenAICompatProvider(
             model=self.model,
@@ -128,6 +131,7 @@ class ProviderConfig(BaseModel):
             embedding_dimensions=self.embedding_dimensions,
             timeout=self.timeout_seconds,
             supports_images=self.vision,
+            image_policy=self.image_policy,
         )
 
     def chain(self) -> list[LLMProvider]:
@@ -946,6 +950,12 @@ def _toml_value(value: Any) -> str:
         return repr(value)
     if isinstance(value, list):
         return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return (
+            "{ "
+            + ", ".join(f"{_toml_value(k)} = {_toml_value(v)}" for k, v in value.items())
+            + " }"
+        )
     text = "".join(_ESCAPES.get(ch, ch) for ch in str(value))
     return f'"{text}"'
 
@@ -953,10 +963,8 @@ def _toml_value(value: Any) -> str:
 def _map(name: str, values: dict[str, str], *, comment: str = "") -> list[str]:
     """Render a table of names to strings as its own section.
 
-    `[tasks.destinations]` is a table, not a field: `_table` renders scalars
-    and lists, and a dict handed to `_toml_value` comes out as a quoted Python
-    repr that the loader then refuses. Its own section is also what somebody
-    editing this file by hand would write.
+    Keep destination maps in their own section for readability when editing
+    the file by hand.
     """
     if not values:
         return []
