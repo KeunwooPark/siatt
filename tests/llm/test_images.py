@@ -107,6 +107,28 @@ def test_tool_results_still_serialize_alongside_an_image() -> None:
     assert messages[1] == {"role": "user", "content": "and?"}
 
 
+def test_a_picture_rides_out_with_the_tool_result_it_came_with() -> None:
+    """What #244 rests on. A tool result is text, so an image a tool found is
+    carried by the turn holding that result — and each family already has a
+    place to put it. Anthropic: one user turn, results first. OpenAI: the
+    results become `tool` messages and the picture a user turn after them."""
+    carried = ChatRequest(
+        messages=(
+            Message.tool_results(
+                [ToolResultBlock(tool_use_id="t1", content="the memory")], images=[block()]
+            ),
+        )
+    )
+
+    anthropic_turn = anthropic()._payload(carried, stream=False)["messages"][0]
+    assert [part["type"] for part in anthropic_turn["content"]] == ["tool_result", "image"]
+
+    openai_messages = openai()._payload(carried, stream=False)["messages"]
+    assert openai_messages[0] == {"role": "tool", "tool_call_id": "t1", "content": "the memory"}
+    assert openai_messages[1]["role"] == "user"
+    assert [part["type"] for part in openai_messages[1]["content"]] == ["image_url"]
+
+
 # -- degrading rather than 400ing --------------------------------------------
 
 

@@ -329,6 +329,9 @@ class Agent:
         retrieved: list[str] = []
         recalled: list[str] = []
         tool_calls = 0
+        #: How many of `context.surfaced` have already been put in a message.
+        #: The tools append as the turn runs and this walks along behind them.
+        shown = 0
         text = ""
         stop_reason = "end_turn"
         trace: PackTrace | None = None
@@ -403,7 +406,18 @@ class Agent:
 
             results = await self._dispatch_all(session_id, tool_uses, context)
             tool_calls += len(results)
-            await self._store.append_message(session_id, Message.tool_results(results))
+            # Pictures a tool reached, on the turn that carries its results. A
+            # tool result is text, so a memory citing a photograph could name it
+            # and never show it (#244); the blocks go on this message because
+            # both compat layers already know how to carry an image beside a
+            # tool result. Sliced rather than drained: the tool reads the same
+            # list's length back as the turn's budget.
+            surfaced = context.surfaced[shown:]
+            shown = len(context.surfaced)
+            await self._store.append_message(
+                session_id,
+                Message.tool_results(results, images=await self._blocks(surfaced, scope)),
+            )
 
         return AgentResult(
             text=text,

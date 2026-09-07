@@ -61,6 +61,12 @@ class ToolContext:
     #: turn writes as it goes. It is what lets a 👍 on the answer reach the
     #: memories a `memory_search` found, not only the ones pre-injected (#36).
     recalled: list[str] = field(default_factory=list)
+    #: Digests of attachments a tool has put in front of the model this turn,
+    #: in the order they were reached. The same kind of notebook as `recalled`
+    #: and written for two readers: the agent loop turns what is new here into
+    #: image blocks on the tool-result turn, and the tool that wrote them reads
+    #: the length back as the turn's budget for showing pictures.
+    surfaced: list[str] = field(default_factory=list)
 
 
 ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[str]]
