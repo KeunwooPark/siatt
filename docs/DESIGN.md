@@ -331,9 +331,48 @@ and kept beside the blob. A format whose header we do not parse is charged the
 ceiling: over-counting wastes a little context, and under-counting ends the
 turn.
 
-Nothing deletes. Deciding that bytes nothing points at may go needs to know what
-the Markdown still references, which is the collector's business rather than the
-store's.
+**A memory points at one, and never contains it.** The reference is an ordinary
+Markdown link with a scheme of our own — `[shot.png](siatt://blob/<sha256>)` —
+so the corpus stays Markdown a person reads on GitHub and nothing mistakes the
+target for a URL to fetch. The link *text* carries the name, which is why an
+explanation citing such a memory reads as a filename rather than as sixty-four
+characters of hash.
+
+The reference is not trusted because a model wrote it. Consolidation reads
+memory files and writes memory files, so once one of these exists the model has
+seen the shape — and a model that has seen the shape will compose a plausible
+sixty-four hex characters for a picture that was never sent. That is not a
+broken link somebody can puzzle out; it is a confident claim about evidence,
+sitting in a file people trust, pointing at nothing. So the patch validator
+checks every reference in a plan against the `attachments` table and *unwraps*
+an unknown one — the link becomes its own text and the prose survives, because
+rejecting the plan would throw away a memory worth keeping over one hallucinated
+hash. This is on for the three jobs where a model authors prose (`promote`,
+`reflect`, `reorganize`) and off for the ones that only move files, since "no
+attachment store" and "an empty attachment store" must not be the same argument.
+
+**`forget` is the only thing that deletes an attachment**, because it is the
+only thing that knows what the Markdown still references. It is also the one
+deletion in this system git cannot undo — a `git rm`'d memory is still in
+history; a blob is a file beside the database — so it is the most conservative
+of the three transitions:
+
+- *any* memory protects it, archived or not. §6.2's rule that links out of the
+  archive do not count exists so a corpus of dead references can shrink; an
+  archived memory is still readable, and taking its picture away leaves it
+  saying "see the photograph" beside nothing.
+- any conversation protects it: a row in `attachment_refs` means a message
+  somewhere still has it attached.
+- recency protects it. The hazard is not a race with one turn — a memory that
+  will cite a picture is written by `promote`, hours after the conversation
+  ended — so the grace period is days.
+
+Bounded per run, on its own budget rather than sharing `max_per_run`: those two
+transitions are commits a person reads in a pull request, and this is a sweep of
+files nobody diffs. The row goes before the file, so a crash between them leaves
+dead space rather than a reference promising bytes that are not there — and
+`siatt doctor` reports both halves, since the sweep reads the table and would
+never find an orphaned file on its own.
 
 **Fetching them** is the one place in Siatt that sends an `Authorization` header
 to an address it did not choose. `web_fetch` never does (§8.3), and the
@@ -663,6 +702,10 @@ feedback. `forget` is deliberately conservative:
 - Never touches anything currently linked from another live memory.
 - Archive first, `git rm` only after a further grace period.
 - Bounded: at most N files per run.
+
+It also sweeps stored attachments nothing points at any more (§4.1.1), on its
+own budget and under wider protections — it is the only deletion here that git
+cannot undo.
 
 ---
 
@@ -1388,6 +1431,9 @@ cost_per_call_usd = 0.0               # from the vendor's price list; counts tow
 enabled      = true
 max_bytes    = 25000000               # per file, enforced while the bytes go past
 allowed_mime = ["image/", "video/"]   # prefixes
+# and, under [forget]:
+# blob_grace_days   = 7               # before an unreferenced attachment may go
+# max_blobs_per_run = 50              # its own budget, separate from max_per_run
 # and, under [slack]:
 # file_hosts = ["slack.com"]          # where the bot token may be sent
 

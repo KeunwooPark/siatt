@@ -20,7 +20,7 @@ person or model — can reason about afterwards.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Container, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from siatt.config import Config, MemorySettings
 from siatt.errors import SiattError
+from siatt.memory import blobref
 from siatt.memory.document import MemoryDoc, MemoryError_, slugify
 from siatt.memory.layout import ARCHIVE_DIR, MEMORY_DIR, is_memory_path
 from siatt.memory.ltm import Change, Remove, Write
@@ -169,12 +170,19 @@ class PatchCompiler:
         policy: MemorySettings | None = None,
         now: datetime | None = None,
         redactor: Redactor | None = None,
+        blobs: Container[str] | None = None,
     ) -> None:
         self._root = root.expanduser()
         self._manifest = manifest
         self._policy = policy or MemorySettings()
         self._now = now or datetime.now(UTC)
         self._redactor = redactor or Redactor.from_config(Config())
+        # Every attachment that exists, for the jobs where a model authors the
+        # prose. None means "do not look at blob references at all", which is
+        # what a job that only moves files wants: an empty set and a None would
+        # otherwise be the same argument with opposite meanings, and the wrong
+        # one silently strips real references out of memories nobody edited.
+        self._blobs = blobs
 
     def compile(self, plan: Sequence[MemoryPatch], *, job: str) -> list[Change]:
         """Return the writes `plan` means, or raise `PatchError` having written nothing."""
@@ -190,6 +198,7 @@ class PatchCompiler:
             except PatchError as exc:
                 rejections.extend(exc.rejections)
 
+        changes = self._prune_blobs(changes, job)
         rejections.extend(self._check_plan_limits(changes))
         rejections.extend(self._check_links(plan, changes, projected))
         rejections.extend(self._check_secrets(changes))
@@ -395,6 +404,33 @@ class PatchCompiler:
                 )
             ]
         return []
+
+    def _prune_blobs(self, changes: list[Change], job: str) -> list[Change]:
+        """Unwrap references to attachments that do not exist.
+
+        A model that has read a memory containing one of these will compose
+        another, and sixty-four hex characters it invented look exactly like
+        sixty-four it did not. Dropped rather than rejected: the plan is usually
+        a memory worth keeping, and the sentence around the link is usually true
+        even when the pointer is not.
+        """
+        if self._blobs is None:
+            return changes
+        out: list[Change] = []
+        for change in changes:
+            if not isinstance(change, Write) or not change.path.endswith(".md"):
+                out.append(change)
+                continue
+            body, dropped = blobref.prune(change.content, self._blobs)
+            if dropped:
+                log.warning(
+                    "%s: dropped %d attachment reference(s) from %s that name nothing stored",
+                    job,
+                    len(dropped),
+                    change.path,
+                )
+            out.append(Write(path=change.path, content=body) if dropped else change)
+        return out
 
     def _check_secrets(self, changes: Sequence[Change]) -> list[Rejection]:
         return [

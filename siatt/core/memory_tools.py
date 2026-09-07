@@ -22,12 +22,14 @@ import logging
 from typing import Any
 
 from siatt.core.tools import Tool, ToolContext
+from siatt.memory import blobref
 from siatt.memory.document import MemoryDoc, MemoryError_, is_memory_id
 from siatt.memory.ltm import MemoryStore, MemoryStoreError
 from siatt.memory.observation import OBSERVATION_KINDS
 from siatt.memory.retrieve import Retriever, permits, render_snippet
 from siatt.memory.subject import normalize_subject
 from siatt.store import Store
+from siatt.store.blobs import Attachments
 
 log = logging.getLogger(__name__)
 
@@ -40,11 +42,17 @@ WROTE = (
 )
 
 
-def memory_tools(*, retriever: Retriever, memory: MemoryStore, store: Store) -> list[Tool]:
+def memory_tools(
+    *,
+    retriever: Retriever,
+    memory: MemoryStore,
+    store: Store,
+    attachments: Attachments | None = None,
+) -> list[Tool]:
     """The three memory tools, bound to one repo and one database."""
     return [
         _search_tool(retriever),
-        _read_tool(memory),
+        _read_tool(memory, attachments),
         _write_tool(store),
     ]
 
@@ -132,7 +140,34 @@ def _search_tool(retriever: Retriever) -> Tool:
 # -- memory_read -------------------------------------------------------------
 
 
-def _read_tool(memory: MemoryStore) -> Tool:
+async def _attachment_note(body: str, attachments: Attachments | None, scope: str) -> str:
+    """What the store knows about the files this memory points at.
+
+    The link text already carries a name -- that is why references are written
+    as `[shot.png](siatt://blob/...)` rather than as a bare URI -- so this adds
+    the two things prose cannot: what kind of file it is, and whether it is
+    still there. A memory outlives the conversation it came from and can outlive
+    the attachment too, and "the photograph this cites is gone" is a fact the
+    model should have before it describes one.
+
+    Scoped, like every attachment read. A memory visible from here may cite a
+    blob that is not, and the honest answer for that one is the same as for a
+    blob that has been collected: it cannot be shown.
+    """
+    wanted = sorted(blobref.referenced(body))
+    if not wanted or attachments is None:
+        return ""
+    lines = []
+    for sha in wanted:
+        held = await attachments.get(sha, scope=scope)
+        if held is None:
+            lines.append(f"- {sha[:12]}… — no longer stored")
+        else:
+            lines.append(f"- {sha[:12]}… — {held.mime}, {held.size:,} bytes")
+    return "\n\n[attachments this memory points at]\n" + "\n".join(lines)
+
+
+def _read_tool(memory: MemoryStore, attachments: Attachments | None = None) -> Tool:
     async def handler(args: dict[str, Any], context: ToolContext) -> str:
         memory_id = str(args["memory_id"]).strip()
         if not is_memory_id(memory_id):
@@ -158,7 +193,7 @@ def _read_tool(memory: MemoryStore) -> Tool:
         # may not see did not contribute to its answer, and recording it here
         # would put its id in front of whoever reads the feedback.
         context.recalled.append(memory_id)
-        return raw
+        return raw + await _attachment_note(doc.body, attachments, context.scope)
 
     return Tool(
         name="memory_read",

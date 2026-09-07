@@ -20,8 +20,9 @@ import asyncio
 import hashlib
 import os
 import secrets
-from collections.abc import AsyncIterable, AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator, Container
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
@@ -64,6 +65,16 @@ class Blob:
     """What was written, as measured rather than as promised."""
 
     sha256: str
+    size: int
+
+
+@dataclass(frozen=True, slots=True)
+class Reclaimed:
+    """One attachment that has been deleted, and what it freed."""
+
+    sha256: str
+    #: Bytes. Reported because "twelve attachments" and "twelve attachments
+    #: totalling four gigabytes" are different facts about a run.
     size: int
 
 
@@ -295,6 +306,36 @@ class Attachments:
         rows = await self._store.attachments_for_message(message_id, scope=scope)
         return [_attachment(row) for row in rows]
 
+    async def collect(
+        self, *, keep: Container[str], older_than: datetime, limit: int
+    ) -> list[Reclaimed]:
+        """Delete attachments nothing points at. Returns what went.
+
+        Unscoped, and it has to be: the question is whether *anything anywhere*
+        still needs these bytes, and a scoped sweep would delete a picture on
+        the strength of not being able to see the conversation that holds it.
+        That is also why this is not something a caller can reach by accident —
+        it is called from `forget`, which is supervised, bounded, and the only
+        thing in Siatt that knows what the Markdown still references.
+
+        The row goes before the file. A row promising bytes that are not there
+        is a dangling reference every reader would have to handle; a file whose
+        row is gone is dead space, invisible and harmless, and `siatt doctor`
+        reports it.
+        """
+        candidates = await self._store.collectable_attachments(before=_stamp(older_than))
+        gone: list[Reclaimed] = []
+        for row in candidates:
+            if len(gone) >= limit:
+                break
+            sha256 = str(row["sha256"])
+            if sha256 in keep:
+                continue
+            await self._store.delete_attachment(sha256)
+            await self._blobs.remove(sha256)
+            gone.append(Reclaimed(sha256=sha256, size=int(str(row["bytes"]))))
+        return gone
+
 
 def _attachment(row: dict[str, object]) -> Attachment:
     name = row.get("name")
@@ -325,6 +366,10 @@ async def _chunks(source: bytes | AsyncIterable[bytes]) -> AsyncIterator[bytes]:
         return
     async for chunk in source:
         yield chunk
+
+
+def _stamp(moment: datetime) -> str:
+    return moment.isoformat(timespec="milliseconds")
 
 
 def _head(path: Path, limit: int) -> bytes:

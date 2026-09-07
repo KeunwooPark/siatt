@@ -320,6 +320,17 @@ class ForgetSettings(BaseModel):
     archive_grace_days: int = 60
     #: Files this may touch in one week, across both transitions.
     max_per_run: int = 20
+    #: How long a stored attachment nothing references is kept anyway. Days
+    #: rather than minutes because the hazard is not a race with one turn: a
+    #: memory that would have referenced a picture is written by `promote`,
+    #: which runs after the conversation is over. Collecting on the same day
+    #: would take the photograph out from under the memory about to cite it.
+    blob_grace_days: int = 7
+    #: Attachments this may delete in one week. Its own budget, separate from
+    #: `max_per_run`: those two transitions are commits a person reads in a pull
+    #: request, and these are files on a disk nobody diffs. Sharing one budget
+    #: would let a week of uploads crowd out the forgetting that matters.
+    max_blobs_per_run: int = 50
 
 
 class ReorganizeSettings(BaseModel):

@@ -469,6 +469,56 @@ class Store:
                 row = await cur.fetchone()
             return dict(row) if row else None
 
+    async def collectable_attachments(self, *, before: str) -> list[dict[str, Any]]:
+        """Blobs no conversation holds any more, oldest first.
+
+        `NOT EXISTS` over the refs is the whole test this end can make. Whether
+        a *memory* still points at one is a question about Markdown in a git
+        repository, which this table knows nothing about — so this returns
+        candidates, and `forget` is what decides.
+
+        Unbounded on purpose. The caller filters by what the corpus references
+        and then takes its own budget, and a `LIMIT` here would interact with
+        that filter to produce a run that reclaimed nothing while candidates
+        waited: the rows this excludes are the ones already gone, and there are
+        never many of those.
+        """
+        async with self._serial:
+            async with self._conn.execute(
+                "SELECT sha256, bytes FROM attachments a"
+                " WHERE a.created_at < ? AND NOT EXISTS ("
+                "   SELECT 1 FROM attachment_refs r WHERE r.sha256 = a.sha256)"
+                " ORDER BY a.created_at, a.sha256",
+                (before,),
+            ) as cur:
+                rows = await cur.fetchall()
+            return [dict(row) for row in rows]
+
+    async def delete_attachment(self, sha256: str) -> bool:
+        """Forget that these bytes existed. `forget` is the only caller."""
+        async with self._serial:
+            cur = await self._conn.execute("DELETE FROM attachments WHERE sha256 = ?", (sha256,))
+            await self._conn.commit()
+            return cur.rowcount > 0
+
+    async def attachment_hashes(self) -> frozenset[str]:
+        """Every blob that exists, unscoped.
+
+        Unscoped on purpose, and it is the one attachment read that is. The
+        question this answers is "did a model invent this hash", which is about
+        existence rather than visibility -- and a scoped version would silently
+        strip a legitimate reference out of a memory whose scope happened not to
+        match the job's, which is a corpus quietly losing its pointers.
+
+        Nothing is returned but the digests: a caller cannot get bytes, a name
+        or a scope out of this, so it cannot become a way around
+        `Attachments.read`.
+        """
+        async with self._serial:
+            async with self._conn.execute("SELECT sha256 FROM attachments") as cur:
+                rows = await cur.fetchall()
+            return frozenset(str(row["sha256"]) for row in rows)
+
     async def attachments_for_message(self, message_id: str, *, scope: str) -> list[dict[str, Any]]:
         """What came attached to one message, filtered before it is returned.
 

@@ -197,7 +197,7 @@ class Librarian:
                 patches.extend(split)
                 outcome.split += 1
 
-        changes, projected = self._compile(patches, manifest)
+        changes, projected = self._compile(patches, manifest, await self._store.attachment_hashes())
         pages = self._pages(projected)
         outcome.pages = len(pages)
         result = await self._apply(changes, pages, outcome)
@@ -325,7 +325,7 @@ class Librarian:
     # -- compiling and committing --------------------------------------------
 
     def _compile(
-        self, patches: Sequence[MemoryPatch], manifest: Manifest
+        self, patches: Sequence[MemoryPatch], manifest: Manifest, blobs: frozenset[str]
     ) -> tuple[list[Change], Manifest]:
         """Everything the plan means, and the corpus it leaves behind.
 
@@ -340,7 +340,12 @@ class Librarian:
         projected = manifest.model_copy(deep=True)
 
         for patch in patches:
-            compiler = PatchCompiler(self._memory.path, projected, policy=self._policy)
+            compiler = PatchCompiler(
+                self._memory.path,
+                projected,
+                policy=self._policy,
+                blobs=blobs,
+            )
             try:
                 compiled = compiler.compile([patch], job=JOB)
             except PatchError as exc:

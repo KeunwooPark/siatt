@@ -215,6 +215,7 @@ class Promoter:
         job_id: str | None = None,
     ) -> None:
         self._store = store
+        self._blobs: frozenset[str] | None = None
         self._memory = memory
         self._retriever = retriever
         self._registry = registry
@@ -290,7 +291,14 @@ class Promoter:
             plan, problem = await self._plan(group, extra=extra)
             if problem is not None or not plan:
                 return [], [], problem
-            compiler = PatchCompiler(self._memory.path, manifest, policy=self._policy)
+            compiler = PatchCompiler(
+                self._memory.path,
+                manifest,
+                policy=self._policy,
+                # A model writes this prose, and a model that has read one
+                # attachment reference will compose another.
+                blobs=await self._known_blobs(),
+            )
             try:
                 return plan, compiler.compile(plan, job=JOB), None
             except PatchError as exc:
@@ -338,6 +346,17 @@ class Promoter:
                 continue
             files[path] = content
         return files
+
+    async def _known_blobs(self) -> frozenset[str]:
+        """Attachments that exist, read once per run.
+
+        Cached because the compiler is rebuilt per patch in some of these jobs,
+        and re-reading the table for each one would be a query per memory to
+        answer a question whose answer does not change inside a run.
+        """
+        if self._blobs is None:
+            self._blobs = await self._store.attachment_hashes()
+        return self._blobs
 
     async def _plan(
         self, group: Group, *, extra: Mapping[str, str] | None = None
