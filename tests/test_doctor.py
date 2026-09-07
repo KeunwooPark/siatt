@@ -326,6 +326,31 @@ async def test_an_unreadable_file_is_not_reported_as_staleness(tmp_path: Path, c
     assert "cannot be indexed" in detail
 
 
+async def test_a_duplicate_id_is_not_reported_as_staleness_either(
+    tmp_path: Path, clone: Path
+) -> None:
+    """It parses, so `unreadable` never covered it — and until #240 it did not
+    reach `doctor` at all, because the reindex that would have found it died.
+    Both halves have to name the same file: the manifest refuses it, and so
+    does the index."""
+    doc = MemoryDoc.new(type="fact", title="News", body="Every morning at 8.")
+    for relative in ("memory/archive/news.md", "memory/facts/news.md"):
+        target = clone / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(doc.render())
+    async with await Store.open(tmp_path / "siatt.db") as store:
+        await MemoryIndex(store, clone).reindex()
+
+    report = await diagnose(config_for(tmp_path), github=github())
+    detail = detail_of(report, "index freshness")
+
+    assert status_of(report, "index freshness") is Status.WARN
+    assert "run `siatt reindex`" not in detail, "it has, and it cannot fix this"
+    assert "memory/facts/news.md" in detail
+    assert "cannot be indexed" in detail
+    assert "memory/facts/news.md" in detail_of(report, "manifest")
+
+
 async def test_a_clean_index_says_what_it_holds(tmp_path: Path, clone: Path) -> None:
     async with await Store.open(tmp_path / "siatt.db") as store:
         await MemoryIndex(store, clone).reindex()

@@ -266,6 +266,28 @@ def test_an_unreadable_file_is_named_once_with_its_reason(rig: tuple[Path, Path]
     assert "no YAML frontmatter" in named[0]
 
 
+def test_a_duplicate_id_is_named_with_the_file_that_owns_it(rig: tuple[Path, Path]) -> None:
+    """ "UNIQUE constraint failed" is not something a person can act on. Two
+    paths and the id they share is a one-line fix (#240)."""
+    config, clone = rig
+    bootstrap(clone)
+    doc = MemoryDoc.new(type="fact", title="News", body="Every morning at 8.")
+    for relative in ("memory/archive/news.md", "memory/facts/news.md"):
+        target = clone / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(doc.render())
+    Manifest.rebuild(clone)[0].save(clone)
+    GitRepo.at(clone).commit("memory: seed a duplicate")
+
+    result = runner.invoke(app, ["reindex", "--config", str(config)])
+
+    assert result.exit_code == 0, result.output
+    named = [line for line in result.output.splitlines() if "memory/facts/news.md" in line]
+    assert len(named) == 1, f"one line per file, got:\n{result.output}"
+    assert doc.id in named[0]
+    assert "memory/archive/news.md" in named[0]
+
+
 def test_the_log_record_names_the_file_once_too(
     rig: tuple[Path, Path], caplog: pytest.LogCaptureFixture
 ) -> None:

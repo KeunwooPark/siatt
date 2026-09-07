@@ -40,10 +40,14 @@ class IndexResult:
     indexed: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
-    #: Files the parser refused, each with the reason. Reasons rather than bare
+    #: Files the index refused, each with the reason. Reasons rather than bare
     #: paths because the caller prints these next to the manifest's problems,
     #: which have always carried one — so a file both halves refused was named
     #: twice, once uselessly (#77).
+    #:
+    #: Not only parse failures. A file whose memory id is already indexed from
+    #: somewhere else reads and parses perfectly and is still refused, because
+    #: there is nowhere to put it: chunk ids are `<memory id>:<ordinal>` (#240).
     problems: list[Problem] = field(default_factory=list)
     chunks: int = 0
     embedded: int = 0
@@ -55,7 +59,7 @@ class IndexResult:
         if self.removed:
             parts.append(f"{len(self.removed)} removed")
         if self.problems:
-            parts.append(f"{len(self.problems)} unreadable")
+            parts.append(f"{len(self.problems)} not indexed")
         if self.embedded:
             parts.append(f"{self.embedded} embedded")
         return ", ".join(parts)
@@ -65,14 +69,17 @@ class IndexResult:
 class Freshness:
     """The gap between the repo and the index, split by what can close it.
 
-    `changed` and `removed` are what a reindex would act on. `unreadable` is
-    what it would refuse again — the same list every run, which is why it must
-    not be reported as staleness.
+    `changed` and `removed` are what a reindex would act on. `refused` is what
+    it would refuse again — the same list every run, which is why it must not
+    be reported as staleness.
     """
 
     changed: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
-    unreadable: list[str] = field(default_factory=list)
+    #: Files a reindex cannot take: unparseable, or carrying a memory id that
+    #: another file on disk already carries. Both are somebody's to fix by hand
+    #: and neither is fixed by running the command again.
+    refused: list[str] = field(default_factory=list)
 
     @property
     def stale(self) -> bool:
@@ -143,18 +150,32 @@ class MemoryIndex:
 
         result = IndexResult()
         state = await self._state()
-        on_disk: set[str] = set()
         dirty_chunks: list[Chunk] = []
 
-        for path in sorted((self._root / MEMORY_DIR).rglob("*.md")):
-            relative = path.relative_to(self._root).as_posix()
-            if not is_memory_path(relative):
-                continue
-            # Added before the read, so an entry that cannot be read is not
-            # then treated as deleted — its rows would be dropped on every run
-            # and `freshness` would report it as removed forever.
-            on_disk.add(relative)
+        # The whole listing first, and the deletions before any of the writes.
+        # A memory that moved — every archive is a move, and the reorganizer
+        # moves files every week — arrives here as a new path whose chunk ids
+        # are still held by the old one, because chunk ids are derived from the
+        # memory id and not from the path. Deleting afterwards was too late:
+        # the insert had already hit `UNIQUE constraint failed: chunks.id` and
+        # taken the run down with it. Reading the directory costs one walk
+        # either way (#240).
+        listing = [
+            (path, relative)
+            for path in sorted((self._root / MEMORY_DIR).rglob("*.md"))
+            if is_memory_path(relative := path.relative_to(self._root).as_posix())
+        ]
+        # Built from the walk rather than as files are read, so an entry that
+        # cannot be read is not then treated as deleted — its rows would be
+        # dropped on every run and `freshness` would report it as removed
+        # forever.
+        on_disk = {relative for _, relative in listing}
 
+        for gone in sorted(set(state) - on_disk):
+            await self._forget(gone)
+            result.removed.append(gone)
+
+        for path, relative in listing:
             try:
                 raw = read_memory_bytes(path, source=relative)
                 sha = blob_sha(raw)
@@ -174,15 +195,31 @@ class MemoryIndex:
                 result.problems.append(Problem(relative, reason))
                 continue
 
+            if (owner := await self._indexed_at(doc.id, relative)) is not None:
+                # Two files on disk carrying one memory id. This is the case the
+                # `except` above cannot reach: it parses perfectly and fails on
+                # the insert, and until #240 the exception escaped and stopped
+                # the job — so nothing indexed, and retrieval went on answering
+                # from a stale index with no sign of it in any conversation.
+                #
+                # Refused rather than made to fit. Deleting by id as well as by
+                # path would let the insert through, and then the two files
+                # would overwrite each other's chunks on alternating runs — a
+                # quieter failure than a reported one. The corpus problem is
+                # somebody's to fix; this is the report (#239).
+                #
+                # The first path wins, as it does in `Manifest.rebuild`, so the
+                # two halves name the same file.
+                reason = f"duplicate id {doc.id}, already indexed from {owner}"
+                log.warning("index: %s: %s", relative, reason)
+                result.problems.append(Problem(relative, reason))
+                continue
+
             chunks = chunk_document(doc, relative)
             await self._replace(relative, chunks, sha)
             dirty_chunks.extend(chunks)
             result.indexed.append(relative)
             result.chunks += len(chunks)
-
-        for gone in sorted(set(state) - on_disk):
-            await self._forget(gone)
-            result.removed.append(gone)
 
         if self._embedder is not None and self._embedding_model is not None:
             result.embedded = await self._update_vectors(dirty_chunks, full=full)
@@ -215,8 +252,12 @@ class MemoryIndex:
         the set that differs, which is normally empty.
         """
         state = await self._state()
+        indexed = await self._indexed_ids()
         fresh = Freshness()
         on_disk: set[str] = set()
+        # The path each memory id is claimed by, first one on disk winning, the
+        # same rule the indexer and `Manifest.rebuild` use.
+        owners: dict[str, str] = {}
 
         for path in sorted((self._root / MEMORY_DIR).rglob("*.md")):
             relative = path.relative_to(self._root).as_posix()
@@ -226,12 +267,26 @@ class MemoryIndex:
 
             try:
                 raw = read_memory_bytes(path, source=relative)
-                if state.get(relative) == blob_sha(raw):
-                    continue
-                MemoryDoc.parse(raw.decode(), source=relative)
+                unchanged = state.get(relative) == blob_sha(raw)
+                # An unchanged file is not parsed — the set this has to open is
+                # the set that differs — so its id comes from the index, which
+                # is where it was written from.
+                memory_id = (
+                    indexed.get(relative)
+                    if unchanged
+                    else MemoryDoc.parse(raw.decode(), source=relative).id
+                )
             except (MemoryError_, UnicodeDecodeError):
-                fresh.unreadable.append(relative)
-            else:
+                fresh.refused.append(relative)
+                continue
+
+            if memory_id is not None and owners.setdefault(memory_id, relative) != relative:
+                # A reindex will refuse this file every run, so reporting it as
+                # staleness would prescribe a command that has already run and
+                # cannot change it — the same mistake `unreadable` was split
+                # out to stop making (#69, #240).
+                fresh.refused.append(relative)
+            elif not unchanged:
                 fresh.changed.append(relative)
 
         fresh.removed.extend(sorted(set(state) - on_disk))
@@ -246,6 +301,25 @@ class MemoryIndex:
     async def _state(self) -> dict[str, str]:
         rows = await self._store.raw("SELECT path, blob_sha FROM index_state")
         return {row["path"]: row["blob_sha"] for row in rows}
+
+    async def _indexed_ids(self) -> dict[str, str]:
+        """The memory id each indexed path carries, read back off the index."""
+        rows = await self._store.raw("SELECT DISTINCT path, memory_id FROM chunks")
+        return {str(row["path"]): str(row["memory_id"]) for row in rows}
+
+    async def _indexed_at(self, memory_id: str, path: str) -> str | None:
+        """Another path already holding this memory's chunks, if there is one.
+
+        Asked of the index rather than of a set built during the run, because
+        the other file is usually not in this run at all: an incremental reindex
+        skips everything whose hash has not moved, so the file that owns the id
+        was indexed hours ago and is never opened again.
+        """
+        rows = await self._store.raw(
+            "SELECT path FROM chunks WHERE memory_id = ? AND path <> ? ORDER BY path LIMIT 1",
+            (memory_id, path),
+        )
+        return str(rows[0]["path"]) if rows else None
 
     async def _replace(self, path: str, chunks: list[Chunk], sha: str) -> None:
         # Delete-then-insert rather than upsert: a file that lost a section must

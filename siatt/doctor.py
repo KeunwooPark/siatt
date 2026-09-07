@@ -448,15 +448,14 @@ async def _index(cfg: Config, store: Store) -> Check:
             f"{stats['chunks']} chunk(s) indexed, but the repo has moved on — run `siatt reindex`",
         )
     counted = f"{stats['chunks']} chunk(s) across {stats['memories']} memories"
-    if fresh.unreadable:
+    if fresh.refused:
         # Deliberately not "run `siatt reindex`". Reindex has already refused
         # these and will refuse them again; the fix is to the file. The
         # `manifest` check below says why each one failed.
         return Check(
             "index freshness",
             Status.WARN,
-            f"{counted}; {len(fresh.unreadable)} file(s) cannot be indexed: "
-            + _listed(fresh.unreadable),
+            f"{counted}; {len(fresh.refused)} file(s) cannot be indexed: " + _listed(fresh.refused),
         )
     return Check("index freshness", Status.OK, counted)
 

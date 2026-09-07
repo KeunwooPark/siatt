@@ -435,6 +435,30 @@ CREATE TABLE index_state (
 `index_state.blob_sha` is what keeps `reindex` cheap: only re-embed files whose
 blob actually changed.
 
+**`chunks.id` is `<memory id>:<ordinal>`**, so that deleting the database and
+rebuilding it produces the same index rather than a differently-keyed one. Two
+consequences the indexer has to be built around, because chunk ids are keyed on
+the memory and rows are replaced by path:
+
+- **Deletions come before writes in a run.** A memory that moves — and every
+  archive is a move — arrives as a new path whose chunk ids the old path still
+  holds. Removing what is gone afterwards was too late; the insert had already
+  hit `UNIQUE constraint failed: chunks.id`.
+- **A file whose id is already indexed elsewhere is refused, not merged.**
+  Deleting by id as well as by path would let the insert through, and the two
+  files would then overwrite each other's chunks on alternating runs — a
+  quieter failure than a reported one. It is reported as a `Problem` naming
+  both paths and the shared id, the run indexes everything else, and `doctor`
+  counts it as a file that cannot be indexed rather than as staleness: running
+  `siatt reindex` again cannot fix it. The corpus is what has to change.
+
+One bad file must never cost the whole index. That rule predates both of these
+and neither of them held it: a duplicate id parses perfectly and failed on the
+insert, outside the `except` that covers parse failures, so the exception
+escaped, the job exhausted its retries, and *nothing* indexed — while retrieval
+went on answering from the index it already had, with no sign of it in any
+conversation.
+
 ### 4.3 Job queue
 
 ```sql
@@ -606,9 +630,9 @@ none of it can survive without. The manifest maps an id to a single path;
 retrieval resolves links through it; the index keys its chunks on
 `<memory id>:<ordinal>`. A second file carrying an id already in use has nowhere
 to go, so each of them breaks in its own way — `Manifest.rebuild` reports it as
-an unreadable file, and `reindex` used to die on a `UNIQUE constraint` and stop
-indexing the whole corpus. Nothing about that is visible in a conversation:
-retrieval goes on answering from the index it already had.
+an unreadable file, and `reindex` refuses it and says which other file owns the
+id (§4.2). Neither is visible in a conversation: retrieval goes on answering
+from whatever it has.
 
 So it is checked where it is cheap, before the commit rather than after.
 `siatt/memory/changeset.py` replays a compiled change list over the manifest and

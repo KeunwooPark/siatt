@@ -152,6 +152,31 @@ async def test_a_reindex_that_cannot_lock_at_all_is_not_reported_as_done(
     assert (await store.raw("SELECT COUNT(*) AS n FROM chunks"))[0]["n"] == 0
 
 
+async def test_a_duplicate_memory_id_does_not_take_the_reindex_job_down(
+    clone: Path, store: Store, caplog: Any
+) -> None:
+    """The reported failure (#240): the job failed, retried, failed, and gave
+    up — `job reindex@... failed 3 time(s), giving up` — and from then on
+    nothing indexed at all. It is one file's problem, and the run has to say so
+    and finish."""
+    doc = MemoryDoc.new(type="fact", title="News", body="Every morning at 8.")
+    for relative in ("memory/archive/news.md", "memory/facts/news.md"):
+        target = clone / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(doc.render())
+    GitRepo.at(clone).commit("memory: seed a duplicate")
+
+    cfg = config_for(clone)
+    row = await Scheduler(store, default_specs(cfg, store)).run_now("reindex")
+
+    assert row["state"] == "done", row["last_error"]
+    indexed = await store.raw("SELECT DISTINCT path FROM chunks ORDER BY path")
+    assert [str(r["path"]) for r in indexed] == [
+        "memory/archive/news.md",
+        "memory/people/jane.md",
+    ], "the rest of the corpus indexed"
+
+
 async def test_the_skip_for_a_lease_someone_else_holds_is_said_out_loud(
     clone: Path, store: Store, caplog: Any
 ) -> None:
