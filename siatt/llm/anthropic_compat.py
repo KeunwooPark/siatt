@@ -9,11 +9,13 @@ import httpx
 
 from siatt.errors import LLMError, ProviderProtocolError
 from siatt.llm.base import HTTPProvider, collect
+from siatt.llm.images import described, encoded, sendable
 from siatt.llm.types import (
     ChatRequest,
     ChatResponse,
     ContentBlock,
     Delta,
+    ImageBlock,
     Message,
     MessageStop,
     StopReason,
@@ -50,6 +52,7 @@ class AnthropicCompatProvider(HTTPProvider):
         name: str = "anthropic",
         client: httpx.AsyncClient | None = None,
         extra_headers: dict[str, str] | None = None,
+        supports_images: bool = True,
     ) -> None:
         headers = {
             "x-api-key": api_key,
@@ -57,7 +60,14 @@ class AnthropicCompatProvider(HTTPProvider):
             "content-type": "application/json",
         }
         headers.update(extra_headers or {})
-        super().__init__(name=name, model=model, base_url=base_url, headers=headers, client=client)
+        super().__init__(
+            name=name,
+            model=model,
+            base_url=base_url,
+            headers=headers,
+            client=client,
+            supports_images=supports_images,
+        )
 
     # -- request mapping -----------------------------------------------------
 
@@ -104,8 +114,7 @@ class AnthropicCompatProvider(HTTPProvider):
             blocks.append({"type": "text", "text": req.context})
         return blocks
 
-    @staticmethod
-    def _message(msg: Message) -> dict[str, Any]:
+    def _message(self, msg: Message) -> dict[str, Any]:
         blocks: list[dict[str, Any]] = []
         for block in msg.content:
             match block:
@@ -122,6 +131,22 @@ class AnthropicCompatProvider(HTTPProvider):
                                 "thinking": block.thinking,
                                 "signature": block.signature,
                             }
+                        )
+                case ImageBlock():
+                    if sendable(block, self.supports_images):
+                        blocks.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": block.mime,
+                                    "data": encoded(block),
+                                },
+                            }
+                        )
+                    else:
+                        blocks.append(
+                            {"type": "text", "text": described(block, self.supports_images)}
                         )
                 case ToolUseBlock():
                     blocks.append(

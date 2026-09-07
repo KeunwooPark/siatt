@@ -1021,6 +1021,9 @@ async def _agent(cfg: Config, *, daemon: bool = False) -> AsyncIterator[Agent]:
     scrub = Redactor.from_config(cfg).scrub
     async with await Store.open(cfg.store.resolved(), scrub=scrub) as store:
         registry = cfg.build_registry(store=store)
+        attachments = (
+            cfg.attachments.build(store, cfg.store.resolved()) if cfg.attachments.enabled else None
+        )
         tools = builtin_tools()
         retriever = None
         search: SearchProvider | None = None
@@ -1108,6 +1111,10 @@ async def _agent(cfg: Config, *, daemon: bool = False) -> AsyncIterator[Agent]:
                 config=cfg.agent_config(),
                 retriever=retriever,
                 inbound_scrub=scrub,
+                # Built once here and shared: the Slack adapter writes through
+                # it and the agent reads back through it, and two of them would
+                # be two caps and two blob directories that only have to agree.
+                attachments=attachments,
             )
         finally:
             await registry.aclose()
@@ -1149,14 +1156,11 @@ async def _serve_slack(cfg: Config) -> None:
             agent,
             cfg.slack,
             scrub=Redactor.from_config(cfg).scrub,
-            # None when the install does not keep attachments, and the adapter
-            # says so in the note rather than staying silent about a file
-            # somebody sent.
-            attachments=(
-                cfg.attachments.build(agent.store, Path(agent.store.path))
-                if cfg.attachments.enabled
-                else None
-            ),
+            # The agent's own, so the adapter writes into exactly the store the
+            # turn will read back out of. None when the install does not keep
+            # attachments, and the adapter then says so in the note rather than
+            # staying silent about a file somebody sent.
+            attachments=agent.attachments,
         )
         # The daemon is where background work belongs: it is the process that
         # stays up, and `siatt run` on a terminal is not.

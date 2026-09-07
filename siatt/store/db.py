@@ -369,7 +369,15 @@ class Store:
 
         # -- attachments ---------------------------------------------------------
 
-    async def record_attachment(self, *, sha256: str, mime: str, size: int) -> None:
+    async def record_attachment(
+        self,
+        *,
+        sha256: str,
+        mime: str,
+        size: int,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> None:
         """Note that these bytes exist. Idempotent, because the key is the bytes.
 
         The first arrival wins on `mime`: two surfaces can label one file
@@ -379,9 +387,9 @@ class Store:
         """
         async with self._serial:
             await self._conn.execute(
-                "INSERT INTO attachments (sha256, mime, bytes, created_at)"
-                " VALUES (?, ?, ?, ?) ON CONFLICT(sha256) DO NOTHING",
-                (sha256, mime, size, _now()),
+                "INSERT INTO attachments (sha256, mime, bytes, width, height, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(sha256) DO NOTHING",
+                (sha256, mime, size, width, height, _now()),
             )
             await self._conn.commit()
 
@@ -452,7 +460,7 @@ class Store:
         """
         async with self._serial:
             async with self._conn.execute(
-                "SELECT sha256, mime, bytes, created_at FROM attachments a"
+                "SELECT sha256, mime, bytes, width, height, created_at FROM attachments a"
                 " WHERE a.sha256 = ? AND EXISTS ("
                 "   SELECT 1 FROM attachment_refs r WHERE r.sha256 = a.sha256"
                 "     AND (r.scope = 'workspace' OR r.scope = ?))",
@@ -470,7 +478,7 @@ class Store:
         """
         async with self._serial:
             async with self._conn.execute(
-                "SELECT a.sha256, a.mime, a.bytes, r.name, r.created_at"
+                "SELECT a.sha256, a.mime, a.bytes, a.width, a.height, r.name, r.created_at"
                 " FROM attachment_refs r JOIN attachments a ON a.sha256 = r.sha256"
                 " WHERE r.message_id = ? AND (r.scope = 'workspace' OR r.scope = ?)"
                 " ORDER BY r.created_at, r.id",

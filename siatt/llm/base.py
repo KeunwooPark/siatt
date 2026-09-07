@@ -79,6 +79,15 @@ class HTTPProvider:
 
     name: str
     model: str
+    #: Whether this endpoint takes images in a user turn.
+    #:
+    #: A flag rather than a lookup table of model names, because the thing on
+    #: the other end of `base_url` is frequently not the vendor: a proxy, a
+    #: local server, an aggregator. Both compat classes default it to True
+    #: because the models people configure are vision-capable, and an install
+    #: whose endpoint is not says so in one line rather than discovering it as a
+    #: 400 halfway through a turn.
+    supports_images: bool
 
     def __init__(
         self,
@@ -89,9 +98,11 @@ class HTTPProvider:
         headers: Mapping[str, str],
         timeout: httpx.Timeout | float | None = None,
         client: httpx.AsyncClient | None = None,
+        supports_images: bool = True,
     ) -> None:
         self.name = name
         self.model = model
+        self.supports_images = supports_images
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
