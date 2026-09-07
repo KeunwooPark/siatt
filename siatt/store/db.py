@@ -367,6 +367,118 @@ class Store:
                 row = await cur.fetchone()
             return int(row["n"]) if row else 0
 
+        # -- attachments ---------------------------------------------------------
+
+    async def record_attachment(self, *, sha256: str, mime: str, size: int) -> None:
+        """Note that these bytes exist. Idempotent, because the key is the bytes.
+
+        The first arrival wins on `mime`: two surfaces can label one file
+        differently, and the alternative -- letting the later delivery rewrite
+        it -- means what a stored image claims to be depends on who sent it
+        last.
+        """
+        async with self._serial:
+            await self._conn.execute(
+                "INSERT INTO attachments (sha256, mime, bytes, created_at)"
+                " VALUES (?, ?, ?, ?) ON CONFLICT(sha256) DO NOTHING",
+                (sha256, mime, size, _now()),
+            )
+            await self._conn.commit()
+
+    async def add_attachment_ref(
+        self,
+        *,
+        sha256: str,
+        source: str,
+        scope: str,
+        external_id: str | None = None,
+        session_id: str | None = None,
+        message_id: str | None = None,
+        author: str | None = None,
+        name: str | None = None,
+    ) -> str:
+        """Record one arrival, and return the ref's id.
+
+        A redelivery of the same file on the same message is the same ref: the
+        partial unique index on (source, external_id, sha256) collapses it, and
+        the existing id comes back. That is what lets a queue with at-least-once
+        semantics store an attachment at-most-once without remembering anything.
+        """
+        async with self._serial:
+            ref_id = str(ULID())
+            await self._conn.execute(
+                "INSERT INTO attachment_refs"
+                " (id, sha256, source, external_id, session_id, message_id, author,"
+                "  scope, name, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                # The conflict target carries the index's own WHERE clause:
+                # SQLite matches an upsert to a *partial* unique index only when
+                # the predicate is repeated here. Without it this is a runtime
+                # "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE
+                # constraint" on every insert, not just the conflicting ones.
+                " ON CONFLICT(source, external_id, sha256) WHERE external_id IS NOT NULL"
+                " DO NOTHING",
+                (
+                    ref_id,
+                    sha256,
+                    source,
+                    external_id,
+                    session_id,
+                    message_id,
+                    author,
+                    scope,
+                    name,
+                    _now(),
+                ),
+            )
+            await self._conn.commit()
+            if external_id is None:
+                return ref_id
+            async with self._conn.execute(
+                "SELECT id FROM attachment_refs"
+                " WHERE source = ? AND external_id = ? AND sha256 = ?",
+                (source, external_id, sha256),
+            ) as cur:
+                row = await cur.fetchone()
+            return str(row["id"]) if row else ref_id
+
+    async def attachment(self, sha256: str, *, scope: str) -> dict[str, Any] | None:
+        """One blob, if `scope` is allowed to know it exists.
+
+        The scope test is `EXISTS` over the refs rather than a join, because a
+        blob with a public arrival and a private one must come back once, not
+        twice -- and because the question being asked is "may this conversation
+        see these bytes at all", which any one permitted arrival answers.
+        """
+        async with self._serial:
+            async with self._conn.execute(
+                "SELECT sha256, mime, bytes, created_at FROM attachments a"
+                " WHERE a.sha256 = ? AND EXISTS ("
+                "   SELECT 1 FROM attachment_refs r WHERE r.sha256 = a.sha256"
+                "     AND (r.scope = 'workspace' OR r.scope = ?))",
+                (sha256, scope),
+            ) as cur:
+                row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def attachments_for_message(self, message_id: str, *, scope: str) -> list[dict[str, Any]]:
+        """What came attached to one message, filtered before it is returned.
+
+        The filter is in the query rather than in the caller for the same reason
+        retrieval's is: a scope test applied after the rows are in hand is one
+        an early `return` can skip past.
+        """
+        async with self._serial:
+            async with self._conn.execute(
+                "SELECT a.sha256, a.mime, a.bytes, r.name, r.created_at"
+                " FROM attachment_refs r JOIN attachments a ON a.sha256 = r.sha256"
+                " WHERE r.message_id = ? AND (r.scope = 'workspace' OR r.scope = ?)"
+                " ORDER BY r.created_at, r.id",
+                (message_id, scope),
+            ) as cur:
+                rows = await cur.fetchall()
+            return [dict(row) for row in rows]
+
         # -- accounting ----------------------------------------------------------
 
     async def record_call(self, record: CallRecord) -> None:
