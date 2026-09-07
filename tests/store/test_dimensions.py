@@ -1,11 +1,11 @@
-"""Reading how big a picture is out of the front of it."""
+"""Reading what a picture is, and how big, out of the front of it."""
 
 from __future__ import annotations
 
 import struct
 import zlib
 
-from siatt.store.dimensions import dimensions
+from siatt.store.dimensions import dimensions, mime_for
 
 
 def png(width: int, height: int) -> bytes:
@@ -120,3 +120,29 @@ def test_a_jpeg_with_a_nonsense_segment_length_stops() -> None:
     broken = b"\xff\xd8" + b"\xff\xe0" + struct.pack(">H", 0) + b"\x00" * 40
 
     assert dimensions(broken) is None
+
+
+# -- what kind of picture it is ----------------------------------------------
+
+
+def test_the_type_is_read_from_the_magic_bytes() -> None:
+    """The caller is an endpoint that returns an image and does not say which
+    kind. A guess there is a picture a vision model later refuses."""
+    assert mime_for(png(10, 10)) == "image/png"
+    assert mime_for(gif(10, 10)) == "image/gif"
+    assert mime_for(jpeg(10, 10)) == "image/jpeg"
+    assert mime_for(webp_vp8l(10, 10)) == "image/webp"
+
+
+def test_anything_else_has_no_type_rather_than_a_default() -> None:
+    """Including formats the store is happy to keep. `None` is what lets the
+    caller refuse; a hopeful `image/png` is what makes it store a lie."""
+    assert mime_for(b"\x00\x00\x00 ftypheic" + b"\x00" * 40) is None
+    assert mime_for(b"not an image at all") is None
+    assert mime_for(b"") is None
+
+
+def test_a_riff_container_that_is_not_a_webp_is_not_one() -> None:
+    """`RIFF....WAVE` is an audio file, and it shares four of its first eight
+    bytes with every WebP."""
+    assert mime_for(b"RIFF" + struct.pack("<I", 36) + b"WAVEfmt ") is None

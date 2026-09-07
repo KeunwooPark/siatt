@@ -32,6 +32,7 @@ from siatt.core.tools import ToolRegistry, builtin_tools
 from siatt.doctor import Report, Status, diagnose, verify_repo_visibility
 from siatt.errors import ConfigError, SiattError
 from siatt.fetch import BrowserRenderer, WebFetcher, web_fetch_tool
+from siatt.imagen import ImageProvider, image_generate_tool
 from siatt.init import run_init
 from siatt.llm.tokens import default_tokenizer
 from siatt.memory.dates import local_zone
@@ -1030,6 +1031,7 @@ async def _agent(cfg: Config, *, daemon: bool = False) -> AsyncIterator[Agent]:
         retriever = None
         search: SearchProvider | None = None
         fetcher: WebFetcher | None = None
+        drawer: ImageProvider | None = None
 
         # Before search, because `web_search`'s description has to say whether
         # there is a tool for opening a result. A model told there is none will
@@ -1110,6 +1112,27 @@ async def _agent(cfg: Config, *, daemon: bool = False) -> AsyncIterator[Agent]:
             # tool that teaches the model to try.
             tools += file_tools(store=store, attachments=attachments)
 
+            if cfg.images.configured:
+                # Inside the same branch, and not beside it: a drawing has to
+                # be kept before it can be sent, and `[images]` without
+                # `[attachments]` is a tool that can only spend money and throw
+                # the result away.
+                try:
+                    drawer = cfg.images.build()
+                except ConfigError as exc:
+                    # Search's posture: answer without the capability rather
+                    # than refuse to start, and let `siatt doctor` say why.
+                    err.print(f"[yellow]![/yellow] drawing unavailable — {exc}")
+                else:
+                    tools.append(
+                        image_generate_tool(
+                            provider=drawer,
+                            attachments=attachments,
+                            meter=registry.meter,
+                            timeout=cfg.images.timeout_seconds + 5.0,
+                        )
+                    )
+
         if daemon:
             # No repo and no model needed: a schedule is a row, and what fires
             # it is the clock this same process runs.
@@ -1135,6 +1158,8 @@ async def _agent(cfg: Config, *, daemon: bool = False) -> AsyncIterator[Agent]:
                 await search.aclose()
             if fetcher is not None:
                 await fetcher.aclose()
+            if drawer is not None:
+                await drawer.aclose()
 
 
 async def _renderer(settings: BrowserSettings) -> BrowserRenderer:

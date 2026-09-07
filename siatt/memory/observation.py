@@ -49,18 +49,53 @@ class Cited:
     name: str
 
 
-def citable(rows: Iterable[Mapping[str, Any]]) -> dict[str, str]:
+#: `attachment_refs.source` for bytes Siatt drew rather than received
+#: (`siatt/imagen/tool.py`). Told apart from every other source because the
+#: difference is not which surface delivered the file — it is whether anybody
+#: was there when it happened.
+GENERATED = "generated"
+
+
+def named(rows: Iterable[Mapping[str, Any]]) -> dict[str, str]:
     """What each attachment of one conversation is called, by digest.
 
-    Both builders resolve a handle against this, and both write the name it
-    gives them onto the observation — so the fallback for an upload the surface
-    never named is here rather than at each of them, and a memory written by
-    the tool reads the same as one written by an extraction.
+    The fallback for an upload the surface never named is here rather than at
+    each caller, so a memory written by the tool reads the same as one written
+    by an extraction — and so a file sent back out is called what it was called
+    on the way in.
     """
     return {
         str(row["sha256"]): str(row["name"] or "").strip() or f"an attachment ({row['mime']})"
         for row in rows
     }
+
+
+def citable(rows: Iterable[Mapping[str, Any]]) -> dict[str, str]:
+    """The same, minus anything Siatt drew itself.
+
+    Both observation builders resolve a handle against this, and a generated
+    picture must not be among them. Long-term memory is Markdown a person reads
+    and believes, `blobref` exists because a model that has seen the shape of a
+    reference will compose one, and a claim citing an image *Siatt invented*
+    would be a fabricated exhibit filed as evidence — worse than a broken link,
+    because nothing about it looks wrong.
+
+    Only the citation paths filter. A generated file is still a file this
+    conversation has: `send_file` can send it again, and the listing that offers
+    it by name uses `named` (`siatt/core/file_tools.py`). What it cannot do is
+    become a footnote in the corpus.
+
+    Rows must therefore carry `source` — `attachments_for_session` is the query
+    that has it, and it is the query both builders use. A row without one counts
+    as arrived, because the shape that lacks it (`attachments_for_message`)
+    describes files that came in on a message, and nothing draws onto one.
+
+    The `source` it reads is the earliest permitted arrival's, which is the one
+    `attachments_for_session` groups to. That is the right one: a picture drawn
+    here and later uploaded back out carries a `generated` arrival first, and
+    the later delivery cannot launder it.
+    """
+    return named(row for row in rows if str(row.get("source") or "") != GENERATED)
 
 
 @dataclass(frozen=True, slots=True)

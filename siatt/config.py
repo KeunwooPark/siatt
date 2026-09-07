@@ -27,6 +27,8 @@ from siatt.core.context import ContextBudget
 from siatt.errors import ConfigError
 from siatt.fetch.browser import BrowserRenderer
 from siatt.fetch.client import WebFetcher
+from siatt.imagen.base import ImageProvider
+from siatt.imagen.openai_images import OpenAIImages
 from siatt.llm.anthropic_compat import AnthropicCompatProvider
 from siatt.llm.base import LLMProvider
 from siatt.llm.cost import CostMeter, Price, PriceBook
@@ -47,6 +49,9 @@ from siatt.vault import resolve
 
 ProviderKind = Literal["openai", "anthropic"]
 SearchKind = Literal["brave"]
+#: Only the OpenAI image shape so far, which is what every gateway that
+#: offers generation at all has copied.
+ImageKind = Literal["openai"]
 
 NO_CHAT_PROVIDER = (
     "no model configured for the 'chat' role.\n"
@@ -57,6 +62,10 @@ NO_CHAT_PROVIDER = (
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_CLONE_PATH = "~/.siatt/ltm"
+#: What `[images] enabled` draws with unless it says otherwise. Named here
+#: rather than left to the endpoint, because "the default image model" is not
+#: a thing an OpenAI-compatible gateway has.
+DEFAULT_IMAGE_MODEL = "openai/gpt-image-2"
 
 #: The one destination that is not a channel somebody configured: the channel
 #: the task was created in, posted at top level so every firing starts its own
@@ -619,6 +628,68 @@ class AttachmentSettings(BaseModel):
         return Attachments(store, self.blobs(db_path), allowed_mime=tuple(self.allowed_mime))
 
 
+class ImageSettings(BaseModel):
+    """Drawing a picture, off unless an install asks for it.
+
+    `[browser]`'s posture rather than `[fetch]`'s, and for `[browser]`'s reason:
+    this is not free. One drawing costs what a great many turns cost, and it
+    writes to disk on top of that. A capability with that price attached is one
+    an install should choose — and until it does, the tool is not registered, so
+    the model never offers a picture this install cannot make.
+
+    Turning it on is one line, because the model name has a default. The
+    endpoint does not: an install points this at the gateway it already uses,
+    the way `[llm.embedding]` names its own, and two settings that quietly
+    inherit from a third are two settings nobody can read off the file.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    kind: ImageKind = "openai"
+    model: str = DEFAULT_IMAGE_MODEL
+    base_url: str | None = None
+    key_env: str | None = None
+    #: `WIDTHxHEIGHT`, or unset for whatever the endpoint calls its default.
+    #: Not something the model chooses: it is the shape of the file and, on
+    #: some endpoints, the price of it.
+    size: str | None = None
+    #: Unset by default because it is not a parameter every endpoint behind
+    #: this shape has — measured, `google/gemini-3.1-flash-image` rejects it
+    #: outright rather than ignoring it, so a value sent on an install's behalf
+    #: would be an install that cannot use half the models it can see.
+    quality: str | None = None
+    #: The whole call. Far above every other tool's, because generation is
+    #: slower than a chat turn by an order of magnitude and the ceiling has to
+    #: allow for the slowest tier of the most expensive model.
+    timeout_seconds: float = Field(default=120.0, gt=0)
+
+    @property
+    def configured(self) -> bool:
+        return self.enabled
+
+    def api_key(self) -> str:
+        env = self.key_env or default_key_env(self.kind)
+        key = resolve(env)
+        if not key:
+            raise ConfigError(
+                f"{env} is not set and is not in the vault "
+                f"(needed to draw pictures with {self.model!r}).\n"
+                f"Export it, or run `siatt vault set {env}`."
+            )
+        return key
+
+    def build(self) -> ImageProvider:
+        return OpenAIImages(
+            model=self.model,
+            api_key=self.api_key(),
+            base_url=self.base_url or "https://api.openai.com/v1",
+            size=self.size,
+            quality=self.quality,
+            timeout=self.timeout_seconds,
+        )
+
+
 class BrowserSettings(BaseModel):
     """Running a page rather than reading it, off unless an install asks.
 
@@ -758,6 +829,7 @@ class Config(BaseModel):
     fetch: FetchSettings = Field(default_factory=FetchSettings)
     browser: BrowserSettings = Field(default_factory=BrowserSettings)
     attachments: AttachmentSettings = Field(default_factory=AttachmentSettings)
+    images: ImageSettings = Field(default_factory=ImageSettings)
     budget: BudgetSettings = Field(default_factory=BudgetSettings)
     tasks: TaskSettings = Field(default_factory=TaskSettings)
     #: USD per million tokens, keyed by model-name prefix. Empty by default:
@@ -1043,6 +1115,7 @@ def render_toml(cfg: Config) -> str:
         # does mention it is a config where somebody moved a limit.
         ("fetch", cfg.fetch),
         ("browser", cfg.browser),
+        ("images", cfg.images),
         ("memory", cfg.memory),
         ("episodes", cfg.episodes),
         ("promote", cfg.promote),

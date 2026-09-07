@@ -568,10 +568,16 @@ class Store:
         arrival's name is shown, and SQLite's bare-column rule -- documented,
         for a query with exactly one `MIN` -- is what makes the rest of the row
         come from that same arrival rather than from an arbitrary one.
+
+        `source` rides along under the same rule, and the same rule is what
+        makes it trustworthy: the *earliest* arrival decides. A picture Siatt
+        drew is `generated` when it is stored and stays that way when it is
+        uploaded back into the thread, so a later delivery cannot relabel one
+        (`citable`, `siatt/memory/observation.py`).
         """
         async with self._serial:
             async with self._conn.execute(
-                "SELECT a.sha256, a.mime, a.bytes, a.width, a.height, r.name,"
+                "SELECT a.sha256, a.mime, a.bytes, a.width, a.height, r.name, r.source,"
                 "       MIN(r.created_at) AS created_at"
                 " FROM attachment_refs r"
                 " JOIN attachments a ON a.sha256 = r.sha256"

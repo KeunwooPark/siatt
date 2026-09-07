@@ -83,6 +83,7 @@ async def diagnose(
     checks.append(_fetch(cfg))
     checks.append(_browser(cfg))
     checks.append(_attachments(cfg))
+    checks.append(_images(cfg))
     return Report(tuple(checks))
 
 
@@ -246,6 +247,43 @@ def _attachments(cfg: Config) -> Check:
         Status.OK,
         f"{kinds} up to {files.max_bytes:,} bytes, in {where} "
         "(the Slack app needs files:read to fetch them and files:write to send them back)",
+    )
+
+
+def _images(cfg: Config) -> Check:
+    """Whether Siatt can draw, and whether it would have anywhere to put a drawing.
+
+    The second half is the check worth having. `[images]` and `[attachments]`
+    are two switches that only disagree on the turn somebody asks for a picture:
+    with drawing on and nothing keeping files, the tool is never registered and
+    the model quietly cannot do a thing the config appears to have enabled. That
+    is `FAIL` rather than a note, because it is a misconfiguration and not a
+    choice — nobody turns drawing on meaning to throw the pictures away.
+
+    Offline, like every other check here. Whether the endpoint has this model is
+    a question for the endpoint, and `doctor` is a command people run when the
+    endpoint is what is not answering.
+    """
+    images = cfg.images
+    if not images.enabled:
+        return Check("image generation", Status.SKIP, "disabled; the agent cannot draw")
+    if not cfg.attachments.enabled:
+        return Check(
+            "image generation",
+            Status.FAIL,
+            "on, but [attachments] is off, so there is nowhere to keep a drawing "
+            "and the tool is not registered",
+        )
+    env = images.key_env or default_key_env(images.kind)
+    try:
+        images.api_key()
+    except ConfigError:
+        return Check("image generation", Status.FAIL, f"{images.model} — {env} is not set")
+    shape = ", ".join(filter(None, (images.size, images.quality and f"quality {images.quality}")))
+    return Check(
+        "image generation",
+        Status.OK,
+        f"{images.model} via {env}" + (f" ({shape})" if shape else ""),
     )
 
 
