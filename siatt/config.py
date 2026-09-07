@@ -35,6 +35,12 @@ from siatt.memory.salience import Decay
 from siatt.search.base import SearchProvider
 from siatt.search.brave import BraveSearch
 from siatt.store import Store
+from siatt.store.blobs import (
+    DEFAULT_ALLOWED_MIME,
+    DEFAULT_MAX_BYTES,
+    Attachments,
+    BlobStore,
+)
 from siatt.vault import resolve
 
 ProviderKind = Literal["openai", "anthropic"]
@@ -551,6 +557,39 @@ class FetchSettings(BaseModel):
         )
 
 
+class AttachmentSettings(BaseModel):
+    """Files people send, kept only if an install asks for them.
+
+    Off by default, on the same terms as `[search]` rather than `[fetch]`. The
+    argument for fetching being on is that it needs nothing and its absence is
+    only discovered on the day it was needed; this needs a directory that grows
+    without bound until the collector exists, and a Slack scope somebody has to
+    go and add. A capability that writes to disk should be asked for.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    #: Per file, enforced while the bytes go past rather than after they are all
+    #: in hand -- a cap applied to something already in memory is not a cap.
+    max_bytes: int = Field(default=DEFAULT_MAX_BYTES, ge=1_024)
+    #: Mime prefixes. Images and video by default: those are the two kinds a
+    #: person sends into a conversation expecting them to be looked at.
+    allowed_mime: tuple[str, ...] = DEFAULT_ALLOWED_MIME
+
+    def blobs(self, db_path: Path) -> BlobStore:
+        return BlobStore.beside(db_path, max_bytes=self.max_bytes)
+
+    def build(self, store: Store, db_path: Path) -> Attachments:
+        """The scoped API, or nothing when the install has not asked for it.
+
+        Returning `Attachments` only when enabled is the same bargain the search
+        tool makes: nothing downstream has to re-check a flag, because there is
+        nothing to call.
+        """
+        return Attachments(store, self.blobs(db_path), allowed_mime=tuple(self.allowed_mime))
+
+
 class BrowserSettings(BaseModel):
     """Running a page rather than reading it, off unless an install asks.
 
@@ -689,6 +728,7 @@ class Config(BaseModel):
     search: SearchSettings = Field(default_factory=SearchSettings)
     fetch: FetchSettings = Field(default_factory=FetchSettings)
     browser: BrowserSettings = Field(default_factory=BrowserSettings)
+    attachments: AttachmentSettings = Field(default_factory=AttachmentSettings)
     budget: BudgetSettings = Field(default_factory=BudgetSettings)
     tasks: TaskSettings = Field(default_factory=TaskSettings)
     #: USD per million tokens, keyed by model-name prefix. Empty by default:

@@ -242,6 +242,71 @@ CREATE TABLE observations (
 );
 ```
 
+### 4.1.1 Attachments
+
+Files people send. Off unless `[attachments]` says otherwise.
+
+Long-term memory is the wrong home for them, for a reason stronger than size: it
+is a Markdown corpus a person reads on GitHub, rewritten wholesale by
+`reorganize`, `forget` and `consolidate`. A binary in it would live in git
+history forever after `forget` deleted it — which quietly defeats §6.2 — and
+would force every curation job to reason about files it cannot read.
+
+The bytes are not in SQLite either. A 40MB video as a row makes backups, WAL
+churn and every incautious `SELECT` expensive. So the filesystem holds the
+bytes, content-addressed at `<db parent>/blobs/<sha256[:2]>/<sha256>`, and the
+database is the index — **and the authority on who may see them**, which is the
+half that leaks when it is wrong.
+
+```sql
+-- One row per distinct set of bytes. Keyed by content, so the same picture
+-- pasted twice is one blob and a replayed inbox row re-writes nothing.
+CREATE TABLE attachments (
+  sha256        TEXT PRIMARY KEY,
+  mime          TEXT NOT NULL,
+  bytes         INTEGER NOT NULL,       -- size on disk, not the content
+  created_at    TEXT NOT NULL
+);
+
+-- One row per arrival: where a blob came from, and who may see it.
+CREATE TABLE attachment_refs (
+  id            TEXT PRIMARY KEY,       -- ULID
+  sha256        TEXT NOT NULL REFERENCES attachments(sha256),
+  source        TEXT NOT NULL,          -- 'slack' | 'cli' | 'http'
+  external_id   TEXT,                   -- the surface's id for the message
+  session_id    TEXT,
+  message_id    TEXT REFERENCES messages(id) ON DELETE CASCADE,
+  author        TEXT,
+  scope         TEXT NOT NULL,          -- §11.1, inherited from the event
+  name          TEXT,                   -- what the surface called it
+  created_at    TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX attachment_refs_arrival
+  ON attachment_refs (source, external_id, sha256)
+  WHERE external_id IS NOT NULL;
+```
+
+**Scope is on the ref, not on the blob**, and that is why there are two tables.
+The same picture sent in a DM and posted in a public channel is one set of bytes
+with two visibilities, and the wider arrival must not widen the narrower one —
+deduplicating on content alone would make *"someone already shared this in
+#general"* into a way to read a DM. Every read takes the requester's scope and
+applies the rule from §11.1 before it returns anything, exactly as retrieval
+does for chunks.
+
+The unique index is the trick from the inbox (§4.3): a queue that delivers at
+least once, plus an arrival key, stores an attachment at most once without
+anything having to remember whether it already ran.
+
+Two caps, both enforced while the bytes go past rather than after they are all
+in hand: `max_bytes` and a mime prefix allowlist (`image/`, `video/` by
+default). A cap applied to something already in memory is not a cap.
+
+Nothing deletes. Deciding that bytes nothing points at may go needs to know what
+the Markdown still references, which is the collector's business rather than the
+store's.
+
 ### 4.2 Derived index (SQLite — rebuildable)
 
 ```sql
@@ -1044,6 +1109,10 @@ means re-deriving the scope of every memory you already wrote.
 Corollary: never write private-channel or DM content to LTM unless the repo is
 confirmed private *and* the channel is opted in.
 
+An attachment inherits the scope of the message it arrived on, and carries it on
+the *arrival* rather than on the bytes (§4.1.1). Content-addressing is what makes
+one picture one file; it must not also make one picture one permission.
+
 A standing task inherits the visibility of the conversation that created it and
 keeps it for as long as it runs (§4.4). Asked for in a DM it fires in that DM,
 under that DM's scope; asked for in a channel it stays in that channel. The
@@ -1247,6 +1316,11 @@ kind              = "brave"
 key_env           = "BRAVE_SEARCH_API_KEY"
 max_results       = 5
 cost_per_call_usd = 0.0               # from the vendor's price list; counts toward [budget]
+
+[attachments]                         # optional; off by default — it writes to disk
+enabled      = true
+max_bytes    = 25000000               # per file, enforced while the bytes go past
+allowed_mime = ["image/", "video/"]   # prefixes
 
 [llm.chat]
 kind   = "anthropic"
