@@ -42,6 +42,7 @@ from datetime import UTC, datetime
 
 from siatt.config import MemorySettings, ReorganizeSettings
 from siatt.llm.registry import ModelRole, ProviderRegistry
+from siatt.memory.changeset import project
 from siatt.memory.consolidate import ConsolidationInput, build_request, decode_plan
 from siatt.memory.dedupe import clusters
 from siatt.memory.document import MemoryDoc, MemoryError_, new_memory_id
@@ -363,7 +364,7 @@ class Librarian:
                 break
             claimed |= paths
             changes.extend(compiled)
-            projected = _project(projected, compiled)
+            projected = project(projected, compiled)
         return changes, projected
 
     async def _apply(
@@ -407,26 +408,6 @@ class Librarian:
 
 
 # -- helpers -----------------------------------------------------------------
-
-
-def _project(manifest: Manifest, changes: Sequence[Change]) -> Manifest:
-    """The manifest as it will be once `changes` are on disk.
-
-    The listings are regenerated from this rather than from what is currently
-    there, so a run that merges two memories does not publish an index naming
-    both of them until the following week.
-    """
-    after = manifest.model_copy(deep=True)
-    for change in changes:
-        if isinstance(change, Write):
-            try:
-                doc = MemoryDoc.parse(change.content, source=change.path)
-            except MemoryError_:
-                continue
-            after.record(change.path, doc, checksum="pending")
-        elif (memory_id := after.id_at(change.path)) is not None:
-            after.forget(memory_id)
-    return after
 
 
 def _scoped(doc: MemoryDoc, scope: str) -> MemoryDoc:
