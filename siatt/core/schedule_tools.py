@@ -32,11 +32,23 @@ is still the caller's own. Pointing a schedule at a *different* channel is
 operator work, `siatt task add --destination` against a name in
 `[tasks.destinations]`, and there is deliberately no way to ask for it here.
 
-**Listing and cancelling are scoped to the calling session**, for the same
-reason: text arriving in one channel must not be able to enumerate or delete
-another channel's schedules (§7.1). The narrowing is in the query, not applied
-to the results — a tool that read every row and then dropped the ones it should
-not show has already had them.
+**Listing and cancelling are scoped to the calling channel**, and to the asker,
+for the same reason: text arriving in one channel must not be able to enumerate
+or delete another channel's schedules (§7.1). The narrowing is in the query,
+not applied to the results — a tool that read every row and then dropped the
+ones it should not show has already had them.
+
+The channel and not the thread, because the thread was the wrong unit and made
+a live schedule read as a deleted one (#260). A task's `session_id` is fixed to
+the thread it was created in, so from any other thread in the channel it posts
+to, `schedule_list` answered "there are no standing tasks in this conversation"
+— true, and taken for "the schedule is gone". The reply to that is a duplicate
+9am digest.
+
+Widening to the channel widens nothing anyone can reach: it is the asker's own
+task, in the channel these words were already said in, and it is the same one
+place `schedule_create` can reach. See `_visible`, which both tools read, so
+that what can be listed is exactly what can be cancelled.
 
 What `schedule_create` returns is the next three fire times, rendered in the
 task's own zone. That is the whole confirmation story: nobody can check
@@ -186,6 +198,57 @@ def _surface_of(session_id: str) -> str:
     return surface or "cli"
 
 
+# -- what the caller may see -------------------------------------------------
+
+
+async def _visible(tasks: Tasks, context: ToolContext) -> list[Task]:
+    """The asker's own schedules that answer where they are asking (#260).
+
+    *Where* is the channel when there is one, and the session when there is
+    not. A task's `session_id` is the thread it was created in and is fixed
+    there, so narrowing on it made a schedule invisible from every other thread
+    in the channel it posts to — including, in the failure this comes from, the
+    thread somebody went to to ask about it. `schedule_list` answered "there
+    are no standing tasks in this conversation", which was true, and was read
+    as "the schedule is gone", which was not: two 9am digests were alive and
+    had run that morning. The model offered a replacement, and only because the
+    person knew better was a third 9am digest not left behind.
+
+    Widening from the thread to the channel is not a widening of what anybody
+    can reach. `owner` still bounds it to the asker's own, and a channel is
+    where these words were already said and where the answer is about to be
+    posted — the same one place `schedule_create` can reach, and the same
+    argument §11.1 makes about it. A DM's channel is the DM, so a DM lists the
+    DM's. What text arriving in one channel still cannot do is enumerate
+    another channel's schedules, which is what §7.1 is about.
+
+    One helper because `schedule_cancel` reads it too, and must: it finds a
+    task under this narrowing rather than by id, so that an id from somewhere
+    else comes back as "no such schedule" rather than as a refusal confirming
+    one exists. A listing that offered ids the next tool refused would be worse
+    than either scoping on its own.
+    """
+    if not context.author:
+        # Both callers check this first and answer `NO_OWNER`. Checked again
+        # here because the failure if one ever stops is silent and total:
+        # `owner=None` is not "nobody's", it is *no narrowing at all*, and this
+        # would hand back every schedule in the channel.
+        return []
+    if context.channel:
+        return await tasks.all(owner=context.author, channel=context.channel)
+    return await tasks.all(owner=context.author, session_id=context.session_id)
+
+
+def _here(context: ToolContext) -> str:
+    """What "here" meant, for a listing that found nothing.
+
+    "None" has to keep meaning none. A tool that narrowed and then reported an
+    empty result without saying what it narrowed to is how #260 happened, and
+    saying it costs six words.
+    """
+    return "this channel" if context.channel else "this conversation"
+
+
 # -- schedule_list -----------------------------------------------------------
 
 
@@ -193,25 +256,48 @@ def _list_tool(tasks: Tasks) -> Tool:
     async def handler(args: dict[str, Any], context: ToolContext) -> str:
         if not context.author:
             return NO_OWNER
-        found = await tasks.all(owner=context.author, session_id=context.session_id)
+        found = await _visible(tasks, context)
         if not found:
-            return "There are no standing tasks in this conversation."
-        return "\n".join(_describe(task) for task in found)
+            return f"You have no standing tasks in {_here(context)}."
+        return "\n".join(_describe(task, context) for task in found)
 
     return Tool(
         name="schedule_list",
         description=(
-            "List the standing tasks you set up in this conversation, with "
-            "their schedules and when each next runs. Use it before cancelling "
-            "one, and to answer 'what have you got scheduled?'."
+            "List the standing tasks you set up in this channel, with their "
+            "schedules, where each one posts, and when each next runs. Use it "
+            "before cancelling one, and to answer 'what have you got "
+            "scheduled?'. It covers the whole channel, not only this thread — "
+            "a schedule set up in one thread posts to the channel and is "
+            "listed from any of them. It cannot see another channel's."
         ),
         input_schema={"type": "object", "properties": {}, "additionalProperties": False},
         handler=handler,
     )
 
 
-def _describe(task: Task) -> str:
-    return f"{task.id} — {task.prompt!r} ({task.label}), {task.state}, next: {_next(task)}"
+def _describe(task: Task, context: ToolContext) -> str:
+    return (
+        f"{task.id} — {task.prompt!r} ({task.label}), {task.state}, "
+        f"{_posts(task, context)}, next: {_next(task)}"
+    )
+
+
+def _posts(task: Task, context: ToolContext) -> str:
+    """Where this one answers, so two 9am digests are told apart.
+
+    The whole point of listing a channel rather than a thread: the reader now
+    sees schedules they did not set up *here*, and "posts every morning at 9"
+    twice over with nothing to distinguish them is a listing that has replaced
+    one confusion with another.
+    """
+    if task.destination == HERE:
+        return "posts as a new thread in this channel"
+    if task.destination is not None:
+        return f"posts to {task.destination!r}"
+    if task.session_id == context.session_id:
+        return "posts in this thread"
+    return "posts in the thread it was created in"
 
 
 def _next(task: Task) -> str:
@@ -240,18 +326,24 @@ def _cancel_tool(tasks: Tasks) -> Tool:
         # Found under the caller's own narrowing rather than by id and then
         # checked: an id from another channel must come back as "no such
         # schedule", not as a refusal that confirms it exists.
-        visible = await tasks.all(owner=context.author, session_id=context.session_id)
+        #
+        # The same narrowing `schedule_list` reads, and that is the invariant
+        # rather than an accident of sharing a helper: you may cancel exactly
+        # what you may see. Widening the listing alone would hand the model ids
+        # this refuses (#260).
+        visible = await _visible(tasks, context)
         if task_id not in {task.id for task in visible}:
-            return f"There is no schedule {task_id!r} in this conversation."
+            return f"There is no schedule {task_id!r} in {_here(context)}."
         await tasks.cancel(task_id)
         return f"Cancelled schedule {task_id}. It will not run again."
 
     return Tool(
         name="schedule_cancel",
         description=(
-            "Cancel a standing task in this conversation, by the id "
-            "`schedule_list` gives. Stopping it is immediate and permanent; "
-            "there is nothing to undo it with."
+            "Cancel a standing task in this channel, by the id "
+            "`schedule_list` gives — exactly what that lists is what this can "
+            "cancel. Stopping it is immediate and permanent; there is nothing "
+            "to undo it with."
         ),
         input_schema={
             "type": "object",

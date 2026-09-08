@@ -17,7 +17,7 @@ import pytest
 
 from siatt.config import HERE, Config, TaskSettings
 from siatt.core.events import InboundEvent
-from siatt.core.schedule_tools import schedule_tools
+from siatt.core.schedule_tools import _visible, schedule_tools
 from siatt.core.tools import Tool, ToolContext, ToolRegistry
 from siatt.llm.types import ToolUseBlock
 from siatt.runner.jobs import default_specs
@@ -254,9 +254,15 @@ async def test_another_channel_s_schedules_are_neither_listed_nor_cancellable(
     assert await Tasks(store).get(theirs.id) is not None
 
 
-async def test_the_same_person_in_another_thread_cannot_reach_it_either(store: Store) -> None:
-    """Narrowed by session as well as by owner. A task answers in one
-    conversation, and that conversation is where it is managed from."""
+async def test_the_same_person_in_another_thread_sees_it(store: Store) -> None:
+    """#260. It used to be invisible from every thread but the one that created
+    it, so a live schedule read as a deleted one: "there are no standing tasks
+    in this conversation" was true, and was taken for "the schedule is gone".
+    The reply to that is a duplicate 9am digest.
+
+    Not a widening of what anybody can reach. It is the asker's own task, in
+    the channel they are already speaking in, which is where it posts and where
+    this answer is about to be posted too."""
     await call(store, "schedule_create", ASK)
     (mine,) = await Tasks(store).all()
     other_thread = ToolContext(
@@ -266,7 +272,81 @@ async def test_the_same_person_in_another_thread_cannot_reach_it_either(store: S
         channel="C0123",
     )
 
-    assert mine.id not in await call(store, "schedule_list", context=other_thread)
+    assert mine.id in await call(store, "schedule_list", context=other_thread)
+
+
+async def test_what_can_be_listed_is_what_can_be_cancelled(store: Store) -> None:
+    """The invariant the two tools share, and the reason cancelling moved with
+    listing: a listing that offered ids the next tool refused would have
+    replaced one confusion with another."""
+    await call(store, "schedule_create", ASK)
+    (mine,) = await Tasks(store).all()
+    other_thread = ToolContext(
+        session_id="slack:T01:C0123:1756899999.999",
+        scope="channel:C0123",
+        author="U01",
+        channel="C0123",
+    )
+
+    cancelled = await call(store, "schedule_cancel", {"id": mine.id}, context=other_thread)
+
+    assert "Cancelled" in cancelled
+    assert not await Tasks(store).all()
+
+
+async def test_somebody_else_s_schedule_in_this_channel_is_not_listed(store: Store) -> None:
+    """Ownership still bounds it. Widening from the thread to the channel is
+    about which of *your* schedules are in reach, not whose."""
+    await call(store, "schedule_create", ASK)
+    (theirs,) = await Tasks(store).all()
+    same_channel = ToolContext(
+        session_id="slack:T01:C0123:1756899999.999",
+        scope="channel:C0123",
+        author="U09",
+        channel="C0123",
+    )
+
+    listed = await call(store, "schedule_list", context=same_channel)
+    cancelled = await call(store, "schedule_cancel", {"id": theirs.id}, context=same_channel)
+
+    assert theirs.id not in listed
+    assert "no schedule" in cancelled
+    assert await Tasks(store).get(theirs.id) is not None
+
+
+async def test_a_listing_that_found_nothing_says_what_it_looked_in(store: Store) -> None:
+    """ "None" has to keep meaning none. Reporting an empty result without
+    saying what was searched is how #260 happened."""
+    empty = ToolContext(
+        session_id="slack:T01:C0456:1756890000.456",
+        scope="channel:C0456",
+        author="U01",
+        channel="C0456",
+    )
+
+    assert "this channel" in await call(store, "schedule_list", context=empty)
+
+
+async def test_a_conversation_with_no_channel_is_still_narrowed_to_itself(store: Store) -> None:
+    """A surface with no channel has nothing wider to widen to, so the session
+    is still the unit — and the listing says so rather than claiming a channel
+    it does not have."""
+    terminal = ToolContext(session_id="cli", scope="workspace", author="U01")
+
+    assert "this conversation" in await call(store, "schedule_list", context=terminal)
+
+
+async def test_a_listing_says_where_each_one_posts(store: Store) -> None:
+    """The cost of listing a channel rather than a thread: the reader now sees
+    schedules they did not set up here, and two 9am digests with nothing to
+    tell them apart is a listing that has solved nothing."""
+    await call(store, "schedule_create", ASK)
+    await call(store, "schedule_create", {**ASK, "new_thread": True})
+
+    listed = await call(store, "schedule_list")
+
+    assert "posts in this thread" in listed
+    assert "posts as a new thread in this channel" in listed
 
 
 async def test_cancelling_stops_it(store: Store) -> None:
@@ -314,3 +394,13 @@ async def test_a_schedule_asked_for_in_a_thread_reaches_the_clock_and_the_queue(
     assert event.reply_to == "1756890000.123"
     assert event.scope == "channel:C0123"
     assert event.origin == "scheduled"
+
+
+async def test_a_context_with_no_owner_narrows_to_nothing(store: Store) -> None:
+    """Both tools refuse before they get here. Checked again in `_visible`
+    because the failure if one ever stops is silent and total: `owner=None` is
+    not "nobody's", it is no narrowing at all."""
+    await call(store, "schedule_create", ASK)
+    anonymous = ToolContext(session_id="slack:T01:C0123:1756890000.123", channel="C0123")
+
+    assert await _visible(Tasks(store), anonymous) == []

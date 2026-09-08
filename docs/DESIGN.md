@@ -886,11 +886,24 @@ Pointing a schedule at a *different* channel needs `siatt task add
 --destination` against a name in `[tasks.destinations]` — a terminal and a
 config file, neither of which text arriving in a conversation can reach.
 
-`schedule_list` and `schedule_cancel` narrow to the calling session **in the
-query**, not by filtering what came back: a tool that reads every row and then
-drops the ones it should not show has already had them. An id belonging to
-another conversation comes back as *no such schedule*, not as a refusal that
-confirms it exists.
+`schedule_list` and `schedule_cancel` narrow to the asker and to the calling
+channel **in the query**, not by filtering what came back: a tool that reads
+every row and then drops the ones it should not show has already had them. An
+id belonging to another channel, or to somebody else, comes back as *no such
+schedule*, not as a refusal that confirms it exists. Both tools read one
+helper, so what can be listed is exactly what can be cancelled — a listing that
+offered ids the other refused would replace one confusion with another.
+
+The channel rather than the thread, because the thread was the wrong unit and
+the failure it caused was not a leak but its mirror. A task's `session_id` is
+the thread it was created in and is fixed there, so from any other thread in
+the channel it posts to, the listing said *there are no standing tasks in this
+conversation* — true, and read as *the schedule was deleted*. The reply to that
+is a duplicate schedule beside the working one. Widening to the channel widens
+nothing reachable: it is the asker's own task, in the channel these words were
+already said in, and it is the same single place `schedule_create` can reach.
+A listing that narrows also says what it narrowed to, so "none" keeps meaning
+none.
 
 The general rule, of which the patch plan is the other instance: when a model
 must not be able to choose something, the design that holds is the one where it

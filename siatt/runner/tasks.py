@@ -346,7 +346,12 @@ class Tasks:
         return Task.from_row(row) if row else None
 
     async def all(
-        self, *, state: str | None = None, owner: str | None = None, session_id: str | None = None
+        self,
+        *,
+        state: str | None = None,
+        owner: str | None = None,
+        session_id: str | None = None,
+        channel: str | None = None,
     ) -> list[Task]:
         """Every task matching the narrowing, oldest first.
 
@@ -356,7 +361,9 @@ class Tasks:
         """
         return [
             Task.from_row(row)
-            for row in await self._store.list_tasks(state=state, owner=owner, session_id=session_id)
+            for row in await self._store.list_tasks(
+                state=state, owner=owner, session_id=session_id, channel=channel
+            )
         ]
 
     async def cancel(self, task_id: str) -> bool:
