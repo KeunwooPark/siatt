@@ -27,6 +27,7 @@ from siatt.core.context import ContextPacker
 from siatt.core.file_tools import file_tools
 from siatt.core.inbox import Inbox
 from siatt.core.memory_tools import memory_tools
+from siatt.core.message_tools import message_tools
 from siatt.core.schedule_tools import schedule_tools
 from siatt.core.tools import ToolRegistry, builtin_tools
 from siatt.doctor import Report, Status, diagnose, verify_repo_visibility
@@ -997,17 +998,27 @@ def _print_report(report: Report) -> None:
 
 
 @asynccontextmanager
-async def _agent(cfg: Config, *, daemon: bool = False) -> AsyncIterator[Agent]:
+async def _agent(
+    cfg: Config, *, daemon: bool = False, sends_messages: bool = False
+) -> AsyncIterator[Agent]:
     """Everything a surface talks to, built once and torn down on every path.
 
     Shared by the terminal and by Slack, so a conversation held in one is
     indistinguishable in the database from one held in the other.
 
-    `daemon` is the one thing the two do not share: whether this process will
-    still be running later. The scheduling tools are registered only when it
-    will be, because a REPL is not alive at nine in the morning, and a tool
-    that silently creates rows nothing will ever fire is worse than a tool that
-    is absent (#180). The terminal keeps `siatt task add`, which says so.
+    Two things the two do not share, and both decide which tools exist rather
+    than what they do:
+
+    `daemon` is whether this process will still be running later. The
+    scheduling tools are registered only when it will be, because a REPL is not
+    alive at nine in the morning, and a tool that silently creates rows nothing
+    will ever fire is worse than a tool that is absent (#180). The terminal
+    keeps `siatt task add`, which says so.
+
+    `sends_messages` is whether an answer here is a thread of messages or one
+    stream of text. `send_message` is absent from a terminal for the same
+    reason, and it is the same rule `file_tools` follows: a tool that can only
+    refuse is a tool that teaches the model to try (#259).
     """
     # A repo that silently became public is a serious incident, so visibility is
     # re-checked on every start rather than trusted from setup time.
@@ -1028,6 +1039,8 @@ async def _agent(cfg: Config, *, daemon: bool = False) -> AsyncIterator[Agent]:
             cfg.attachments.build(store, cfg.store.resolved()) if cfg.attachments.enabled else None
         )
         tools = builtin_tools()
+        if sends_messages:
+            tools += message_tools()
         retriever = None
         search: SearchProvider | None = None
         fetcher: WebFetcher | None = None
@@ -1189,7 +1202,7 @@ async def _serve_slack(cfg: Config) -> None:
     # must keep working on an install that never asked for Slack.
     from siatt.adapters.slack import SlackAdapter
 
-    async with _agent(cfg, daemon=True) as agent:
+    async with _agent(cfg, daemon=True, sends_messages=True) as agent:
         adapter = await SlackAdapter.connect(
             agent,
             cfg.slack,

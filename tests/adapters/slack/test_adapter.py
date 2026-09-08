@@ -17,7 +17,7 @@ from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 
 from siatt.adapters import slack as package
-from siatt.adapters.slack.app import NO_HTTP_VERIFICATION, SlackAdapter
+from siatt.adapters.slack.app import NO_HTTP_VERIFICATION, SlackAdapter, messages
 from siatt.adapters.slack.events import Accepted, SlackContext, normalize
 from siatt.adapters.slack.limits import MAX_TEXT
 from siatt.config import AttachmentSettings
@@ -25,11 +25,12 @@ from siatt.core.agent import Agent, AgentResult
 from siatt.core.context import ContextPacker
 from siatt.core.events import InboundEvent
 from siatt.core.file_tools import file_tools
+from siatt.core.message_tools import message_tools
 from siatt.core.revise import TOMBSTONE
-from siatt.core.tools import ToolRegistry
+from siatt.core.tools import Tool, ToolRegistry
 from siatt.llm.registry import ModelRole, ProviderRegistry
 from siatt.llm.tokens import Tokenizer
-from siatt.llm.types import ChatRequest, Delta
+from siatt.llm.types import ChatRequest, ChatResponse, Delta, Message, ToolUseBlock, Usage
 from siatt.store import Store
 from siatt.store.blobs import Attachments
 from tests.conftest import until
@@ -119,11 +120,16 @@ class SlowProvider(ScriptedProvider):
             yield delta
 
 
-def make_agent(store: Store, tokenizer: Tokenizer, provider: ScriptedProvider) -> Agent:
+def make_agent(
+    store: Store,
+    tokenizer: Tokenizer,
+    provider: ScriptedProvider,
+    tools: list[Tool] | None = None,
+) -> Agent:
     return Agent(
         registry=ProviderRegistry({ModelRole.CHAT: [provider]}),
         store=store,
-        tools=ToolRegistry([]),
+        tools=ToolRegistry(tools or []),
         packer=ContextPacker(tokenizer=tokenizer),
     )
 
@@ -136,6 +142,7 @@ def make_adapter(
     concurrency: int = 8,
     stream: bool = True,
     attachments: Attachments | None = None,
+    tools: list[Tool] | None = None,
 ) -> tuple[SlackAdapter, RecordingClient]:
     client = RecordingClient()
     app = AsyncApp(
@@ -144,7 +151,7 @@ def make_adapter(
         request_verification_enabled=False,
     )
     adapter = SlackAdapter(
-        make_agent(store, tokenizer, provider or ScriptedProvider([says("noted")] * 200)),
+        make_agent(store, tokenizer, provider or ScriptedProvider([says("noted")] * 200), tools),
         app=app,
         context=SlackContext(bot_user_id=BOT, team_id=TEAM),
         app_token="xapp-test",
@@ -979,3 +986,59 @@ async def test_a_reaction_on_a_message_siatt_never_posted_does_nothing(
     await adapter.on_reaction(reaction_event(on="1700009999.999999"))
 
     assert await store.endorsements_since("2000-01-01") == {}
+
+
+async def test_a_turn_that_ends_a_message_gets_another_one(
+    store: Store, tokenizer: Tokenizer
+) -> None:
+    """#259. The turn used to end there: it wrote section ①, ended the message
+    meaning to begin another, and sections ② and ③ were never written."""
+    provider = ScriptedProvider(
+        [
+            ChatResponse(
+                message=Message(
+                    role="assistant",
+                    content=(
+                        ToolUseBlock(id="t0", name="send_message", input={"text": "section ①"}),
+                    ),
+                ),
+                stop_reason="tool_use",
+                usage=Usage(input_tokens=10, output_tokens=5),
+                model="m",
+            ),
+            says("section ②"),
+        ]
+        * 4
+    )
+    adapter, client = make_adapter(store, tokenizer, provider=provider, tools=message_tools())
+
+    running = asyncio.create_task(adapter.runtime.run())
+    try:
+        await adapter.on_event(mention())
+        await answered(client)
+        await until(lambda: len(client.posted) > 1)
+        await asyncio.sleep(0.1)
+    finally:
+        adapter.runtime.stop()
+        await asyncio.wait_for(running, timeout=10.0)
+
+    assert client.messages == ["section ①", "section ②"], "both of them, in order"
+
+
+async def test_the_note_goes_on_the_last_message_and_nowhere_else(
+    store: Store, tokenizer: Tokenizer
+) -> None:
+    """It explains how the turn stopped, and a turn stops once however many
+    messages it took to get there."""
+    rendered = messages(
+        AgentResult(text="section ②", parts=("section ①",), stop_reason="max_tokens")
+    )
+
+    assert rendered[0] == "section ①"
+    assert rendered[1].startswith("section ②") and "output limit" in rendered[1]
+
+
+async def test_a_turn_with_nothing_left_to_add_sends_no_empty_message(
+    store: Store, tokenizer: Tokenizer
+) -> None:
+    assert messages(AgentResult(text="  ", parts=("all of it",))) == ["all of it"]

@@ -127,6 +127,7 @@ class Runtime:
         prepare: EventPreparer | None = None,
         scrub: Scrubber | None = None,
         sends_files: bool = False,
+        sends_messages: bool = False,
     ) -> None:
         self._agent = agent
         self._reply = reply
@@ -137,6 +138,12 @@ class Runtime:
         # worse than a refusal. False by default, so a surface acquires the
         # capability by wiring it up rather than by existing.
         self._sends_files = sends_files
+        # Whether this surface's `Reply` delivers an answer as messages rather
+        # than as one stream of text. It travels with the turn for the same
+        # reason `sends_files` does, and against the same failure: a turn that
+        # ends a message meaning to begin another one stops mid-answer where
+        # that is not true, and stops without being told (#259).
+        self._sends_messages = sends_messages
         self._prepare = prepare
         self._scrub = scrub or (lambda text: text)
         self._ephemeral_originals: dict[tuple[str, str], str] = {}
@@ -225,6 +232,7 @@ class Runtime:
                 # none and contributes nothing.
                 attachments=[a.sha256 for a in turn.event.attachments if a.sha256],
                 can_send_files=self._sends_files,
+                sends_messages=self._sends_messages,
             )
         except BaseException:
             # Including cancellation, which is what a shutdown mid-turn is. A

@@ -62,6 +62,12 @@ class ToolContext:
     #: anything, because the failure that matters is not an unsent file but an
     #: answer that says "here it is" on a surface that only sends strings.
     can_send_files: bool = False
+    #: Whether an answer here arrives as messages rather than as one stream of
+    #: text. Set from the surface for the same reason as `can_send_files`, and
+    #: read for the same reason too: a turn that ends a message meaning to
+    #: begin another one has stopped mid-answer wherever that is not true, and
+    #: it stops without knowing (#259).
+    sends_messages: bool = False
     #: Memory ids the tools pulled into this turn, in the order they were
     #: reached. Mutable inside a frozen context on purpose: the scope above is
     #: a permission and must not be reassignable, while this is a notebook the
@@ -80,6 +86,12 @@ class ToolContext:
     #: end of the turn, which resolves each one back through the store — under
     #: the scope, because what is written here is a digest and not a permission.
     outgoing: list[str] = field(default_factory=list)
+    #: Messages this turn has decided to send *before* the one it ends with, in
+    #: the order it named them. The same kind of notebook as `outgoing`, and
+    #: read the same two ways: by `send_message` as the turn's remaining
+    #: budget, and by the agent loop at the end of the turn, which hands them
+    #: to the surface ahead of the answer.
+    parts: list[str] = field(default_factory=list)
 
 
 ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[str]]

@@ -966,7 +966,9 @@ So the agent also gets:
 
 And, where the surface can carry one, `send_file(ids)` → the files that go back
 with this answer (§4.1.1), and `image_generate(prompt)` → a picture drawn for it
-(§8.7).
+(§8.7). Where an answer is a thread of messages rather than one stream of text,
+`send_message(text)` → ends one message and keeps going, for an answer that has
+parts the reader would want kept apart.
 
 Do not pick one strategy. Injection handles the 90% case; tools handle the tail.
 Note that `memory_write` enqueues into `observations` — the agent proposes, the
@@ -1359,6 +1361,14 @@ Details that bite, in rough order of how quickly they will bite:
   mid-request abandons this side of a write Slack has already accepted, and it
   can then be applied *after* the answer, leaving the thread on a mid-sentence
   prefix of a reply that was delivered in full.
+- **A turn may end a message without ending the turn.** `send_message` is the
+  break the *model* chose, and it exists because the alternative is silent: a
+  turn that decided its answer read better in three sections wrote the first,
+  ended expecting to continue, and the other two were never written. Bounded
+  like `send_file`, checked against the surface before anything is recorded,
+  and delivered with the answer rather than during the turn — so a turn that
+  fails has posted nothing, and its redelivery is the same turn rather than
+  half of one plus another whole one.
 - **An answer longer than one message becomes several**, in order, the first of
   them in the message that was being rewritten and the rest under it. The
   ceiling is well below anything Slack documents, because the published 40,000
@@ -1504,6 +1514,7 @@ siatt/
     context.py         tokenizer-aware packer
     tools.py           memory_search / memory_read / memory_write
     schedule_tools.py  schedule_create / schedule_list / schedule_cancel
+    message_tools.py   send_message, and the surface it asks before recording
   fetch/
     guard.py           where a fetch may go, decided before a byte is sent
     client.py          one GET, bounded in time, bytes, hops, and content type

@@ -191,16 +191,19 @@ class LiveMessage:
             case _:
                 pass
 
-    async def finish(self, text: str) -> None:
+    async def finish(self, *texts: str) -> None:
         """Stop redrawing and write the answer, whatever happened before it.
 
-        In as many messages as it takes. One is the ordinary case and the only
-        one the rest of this class is about; a long answer is the case that
-        used to be refused outright, and the parts after the first go into the
-        thread under the message that was being rewritten.
+        In as many messages as it takes, and it takes at least as many as it
+        was given. One is the ordinary case and the only one the rest of this
+        class is about. Several arrive two ways, and they compose: a turn that
+        decided its answer has sections said so (#259), and any section still
+        too long for one message is cut where it fits (#258). Either way the
+        first goes in the message that was being rewritten and the rest follow
+        it into the thread.
         """
         await self._stop_painting()
-        parts = split(text, self._limit)
+        parts = [part for text in texts for part in split(text, self._limit)]
         if not parts:
             # `AgentResult.note` fills this in for every stop reason there is,
             # so an empty answer here means something upstream changed. The
