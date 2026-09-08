@@ -19,8 +19,9 @@ from slack_sdk.web.async_client import AsyncWebClient
 from siatt.adapters import slack as package
 from siatt.adapters.slack.app import NO_HTTP_VERIFICATION, SlackAdapter
 from siatt.adapters.slack.events import Accepted, SlackContext, normalize
+from siatt.adapters.slack.limits import MAX_TEXT
 from siatt.config import AttachmentSettings
-from siatt.core.agent import Agent
+from siatt.core.agent import Agent, AgentResult
 from siatt.core.context import ContextPacker
 from siatt.core.events import InboundEvent
 from siatt.core.file_tools import file_tools
@@ -504,6 +505,65 @@ async def test_streaming_off_posts_the_answer_and_nothing_else(
 
     assert client.messages == ["noted"]
     assert client.updates == []
+
+
+async def test_an_answer_too_long_for_one_message_arrives_in_several(
+    store: Store, tokenizer: Tokenizer
+) -> None:
+    """#258. It used to arrive in none of them: Slack refused the write, the
+    turn failed, and the retry — reading the answer in its own history — told
+    the person it had already been posted."""
+    long_answer = "\n\n".join(f"item {n}: " + "detail " * 30 for n in range(20))
+    assert len(long_answer) > MAX_TEXT, "the case under test"
+    adapter, client = make_adapter(
+        store, tokenizer, provider=ScriptedProvider([says(long_answer)] * 4)
+    )
+
+    running = asyncio.create_task(adapter.runtime.run())
+    try:
+        await adapter.on_event(mention())
+        await answered(client)
+        await until(lambda: len(client.posted) > 1)
+        await asyncio.sleep(0.1)
+    finally:
+        adapter.runtime.stop()
+        await asyncio.wait_for(running, timeout=10.0)
+
+    thread = client.messages
+    assert len(thread) > 1, "more than one message carried it"
+    assert all(len(message) <= MAX_TEXT for message in thread)
+    assert "item 0" in thread[0] and "item 19" in thread[-1], "in order, all of it"
+    assert all(post.get("thread_ts") == "1700000000.000100" for post in client.posted), (
+        "every part in the thread that asked"
+    )
+
+
+async def test_a_standing_task_s_parts_go_under_its_first_message(
+    store: Store, tokenizer: Tokenizer
+) -> None:
+    """A task posts into a channel rather than a thread (#215), so there is no
+    `thread_ts` to inherit. Three sections must not become three top-level
+    messages in the channel."""
+    adapter, client = make_adapter(store, tokenizer)
+    event = InboundEvent(
+        source="slack",
+        external_id="task:01TEST@2026-09-08T00:00+00:00",
+        session_id="slack:task:01TEST@2026-09-08T00:00+00:00",
+        text="the morning digest",
+        scope="channel:C0DEPLOY",
+        author=HUMAN,
+        channel="C0DEPLOY",
+        reply_to=None,
+        origin="scheduled",
+    )
+
+    sections = [f"section {name}\n" + "detail " * 300 for name in ("one", "two", "three")]
+    await adapter.reply(event, AgentResult(text="\n\n".join(sections)))
+
+    first, *rest = client.posted
+    assert rest, "it did not fit in one"
+    assert first["thread_ts"] is None, "the first opens the thread"
+    assert [post["thread_ts"] for post in rest] == [first["ts"]] * len(rest)
 
 
 async def test_a_retried_turn_rewrites_its_own_placeholder(

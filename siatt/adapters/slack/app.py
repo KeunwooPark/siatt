@@ -31,7 +31,13 @@ from siatt.adapters.slack.events import (
 )
 from siatt.adapters.slack.files import SlackFiles
 from siatt.adapters.slack.identity import Directory
-from siatt.adapters.slack.stream import DEFAULT_INTERVAL, LiveMessage, SlackRateLimited
+from siatt.adapters.slack.limits import split
+from siatt.adapters.slack.stream import (
+    DEFAULT_INTERVAL,
+    LiveMessage,
+    SlackRateLimited,
+    SlackRefused,
+)
 from siatt.adapters.slack.upload import SlackUploads, UploadRefused
 from siatt.config import SlackSettings
 from siatt.core.agent import Agent, AgentResult
@@ -84,6 +90,11 @@ class SlackAdapter:
         self._interval = interval
         self._reactions = dict(reactions if reactions is not None else SlackSettings().reactions)
         self._unfinished: dict[str, str] = {}
+        #: Every write Slack takes from this adapter goes through here, which
+        #: is what makes `_translate` unavoidable: a `chat.postMessage` called
+        #: directly would raise `SlackApiError`, and a refusal nobody
+        #: classified is a refusal the inbox retries five times (#258).
+        self._poster = _ClientPoster(self.client)
         self.directory = Directory(agent.store, self._users_info, team_id=context.team_id)
         self.files = files
         self._owns_files = owns_files
@@ -92,7 +103,7 @@ class SlackAdapter:
         self.uploads = (
             SlackUploads(
                 uploader=_ClientUploader(self.client),
-                poster=_ClientPoster(self.client),
+                poster=self._poster,
                 store=agent.store,
                 attachments=attachments,
             )
@@ -373,7 +384,7 @@ class SlackAdapter:
         if not event.channel or event.reply_to is None:
             return _Posted(self, event)
         message = LiveMessage(
-            _ClientPoster(self.client),
+            self._poster,
             channel=event.channel,
             thread_ts=event.reply_to,
             interval=self._interval,
@@ -385,19 +396,27 @@ class SlackAdapter:
         return _Live(self, event, message)
 
     async def reply(self, event: InboundEvent, result: AgentResult) -> None:
-        """Post the answer as one message, having shown nothing before it.
+        """Post the answer, having shown nothing before it.
 
-        What a build with `stream: false` uses, and where a live reply lands
-        when its placeholder never went up.
+        What a build with `stream: false` uses, and what a standing task gets:
+        nobody is watching either, so the first anyone sees is the answer.
+
+        In as many messages as the answer needs. The parts after the first go
+        *under* the first — `event.reply_to` when there is a thread already,
+        and otherwise the message this turn has just made into one, which is
+        the same thread `opened_thread` is about to record. A standing task
+        that posts three sections must not post three top-level messages.
         """
         text = answer(result)
-        if not text or not event.channel:
+        parts = split(text) if text else []
+        if not parts or not event.channel:
             log.warning("nothing to post for %s", event.external_id)
             return
-        posted = await self.client.chat_postMessage(
-            channel=event.channel, thread_ts=event.reply_to, text=text
-        )
-        ts = str(posted.get("ts") or "")
+        ts = await self._poster.post(channel=event.channel, thread_ts=event.reply_to, text=parts[0])
+        for part in parts[1:]:
+            await self._poster.post(
+                channel=event.channel, thread_ts=event.reply_to or ts, text=part
+            )
         await self.opened_thread(event, ts)
         await self.remember_answer(event, result, ts)
         await self.send_files(event, result)
@@ -602,10 +621,17 @@ class _ClientUploader:
 _NO_SCOPE = ("not_allowed_token_type", "missing_scope", "no_permission", "access_denied")
 
 
+def _code(exc: SlackApiError) -> str:
+    """Slack's own name for what was wrong, or empty if it did not say."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return ""
+    return str(response.get("error") or "")
+
+
 def _refusal(exc: SlackApiError) -> str:
     """Why the file did not go, for somebody reading the thread."""
-    response = getattr(exc, "response", None)
-    code = str((response or {}).get("error") or "") if response is not None else ""
+    code = _code(exc)
     if code in _NO_SCOPE:
         return "Siatt's Slack app lacks the files:write scope"
     if code == "ratelimited":
@@ -615,23 +641,74 @@ def _refusal(exc: SlackApiError) -> str:
     return "Slack refused it"
 
 
-def _translate(exc: SlackApiError) -> Exception:
-    """Slack's "too fast", told from Slack's "no".
+#: Refusals that another identical attempt will never satisfy. Three kinds,
+#: and the reason they are one list is that the caller's move is the same for
+#: all three — stop, rather than spend another model call finding out again:
+#:
+#: the message is not sendable as it stands (`msg_too_long`); the message being
+#: rewritten is gone or beyond editing, which `_write_final` recovers from by
+#: posting instead; and the app is not allowed to write here at all, which is
+#: an operator's problem and wants a dead letter naming it, not five turns.
+#:
+#: Anything not listed stays an ordinary exception and keeps the old behaviour,
+#: a failed turn that is delivered again. An unrecognised code is more likely
+#: to be something transient we have not seen yet than something permanent, and
+#: the cost of guessing wrong that way is a retry rather than a lost answer.
+_PERMANENT = frozenset(
+    {
+        # the message as it stands
+        "as_user_not_supported",
+        "invalid_blocks",
+        "invalid_blocks_format",
+        "msg_too_long",
+        "no_text",
+        # the message being written, rather than the workspace
+        "cant_update_message",
+        "edit_window_closed",
+        "message_not_found",
+        # the door: an operator's problem, and a dead letter names it
+        "account_inactive",
+        "channel_not_found",
+        "ekm_access_denied",
+        "invalid_auth",
+        "is_archived",
+        "missing_scope",
+        "not_allowed_token_type",
+        "not_in_channel",
+        "restricted_action",
+        "restricted_action_non_threadable_channel",
+        "restricted_action_read_only_channel",
+        "restricted_action_thread_locked",
+        "team_access_not_granted",
+        "thread_not_found",
+        "token_expired",
+        "token_revoked",
+    }
+)
 
-    Only a 429 becomes `SlackRateLimited`, because it is the only one where
-    waiting is the answer. Everything else is passed along as it was: a
-    live frame swallows it and the final write fails the turn, which is the
-    right split for `channel_not_found` or a revoked token.
+
+def _translate(exc: SlackApiError) -> Exception:
+    """Slack's "too fast", told from Slack's "no", told from the rest.
+
+    A 429 becomes `SlackRateLimited`, because it is the one answer where
+    waiting is the response. A code on `_PERMANENT` becomes `SlackRefused`,
+    because it is an answer no repetition changes and the queue's default —
+    deliver it again, model call and all — is exactly wrong for it (#258).
+
+    Everything else is passed along as it was: a live frame swallows it, and
+    the final write fails the turn and earns a retry.
     """
     response = getattr(exc, "response", None)
-    if response is None or getattr(response, "status_code", None) != 429:
-        return exc
-    headers = getattr(response, "headers", {}) or {}
-    try:
-        retry_after = float(headers.get("Retry-After", 1))
-    except (TypeError, ValueError):
-        retry_after = 1.0
-    return SlackRateLimited(retry_after)
+    if response is not None and getattr(response, "status_code", None) == 429:
+        headers = getattr(response, "headers", {}) or {}
+        try:
+            retry_after = float(headers.get("Retry-After", 1))
+        except (TypeError, ValueError):
+            retry_after = 1.0
+        return SlackRateLimited(retry_after)
+    if (code := _code(exc)) in _PERMANENT:
+        return SlackRefused(code)
+    return exc
 
 
 def _token(env: str | None, kind: str) -> str:

@@ -18,6 +18,7 @@ from siatt.adapters.slack.stream import (
     THINKING,
     LiveMessage,
     SlackRateLimited,
+    SlackRefused,
 )
 from siatt.llm.types import MessageStop, TextDelta, ToolUseStart, Usage
 
@@ -36,6 +37,9 @@ class FakePoster:
         #: How many of the next calls to refuse, and how.
         self.refuse_updates = 0
         self.fail_posts = 0
+        #: The other kind of no: one that waiting does not fix.
+        self.deny_updates = 0
+        self.deny_posts = 0
         #: A write that has reached Slack and is waiting on it. `entered` is
         #: set the moment one arrives; it lands when `gate` is set. Slack is
         #: the slow half of a `chat.update` and this is the only way to hold a
@@ -48,6 +52,9 @@ class FakePoster:
         if self.fail_posts:
             self.fail_posts -= 1
             raise RuntimeError("slack said no")
+        if self.deny_posts:
+            self.deny_posts -= 1
+            raise SlackRefused("msg_too_long")
         self.posts.append(text)
         return f"ts{len(self.posts)}"
 
@@ -55,6 +62,9 @@ class FakePoster:
         if self.refuse_updates:
             self.refuse_updates -= 1
             raise SlackRateLimited(0.0)
+        if self.deny_updates:
+            self.deny_updates -= 1
+            raise SlackRefused("edit_window_closed")
         self.entered.set()
         if self.gate is not None:
             await self.gate.wait()
@@ -349,3 +359,103 @@ async def test_closing_stops_the_redrawing() -> None:
     await ticks(3)
 
     assert len(poster.updates) == before, "the painter is gone, not merely quiet"
+
+
+# -- an answer that does not fit in one message -------------------------------
+
+
+async def test_a_long_answer_becomes_several_messages_in_order() -> None:
+    """#258. It used to become a refusal, and the refusal used to become four
+    more model calls and nothing in the thread."""
+    poster = FakePoster()
+    message = live(poster, limit=12)
+    await message.open()
+
+    await message.finish("alpha bravo charlie delta")
+
+    assert poster.updates == ["alpha bravo"], "the first part went where the placeholder was"
+    assert poster.posts == [THINKING, "charlie", "delta"], "the rest followed, in order"
+
+
+async def test_an_answer_that_fits_is_still_exactly_one_write() -> None:
+    """The ordinary case is the one that must not have grown a second call."""
+    poster = FakePoster()
+    message = live(poster, limit=100)
+    await message.open()
+
+    await message.finish("It was Tuesday.")
+
+    assert poster.updates == ["It was Tuesday."]
+    assert poster.posts == [THINKING], "no follow-up for an answer that fits"
+
+
+async def test_a_long_answer_with_no_placeholder_is_posted_in_parts() -> None:
+    poster = FakePoster()
+    poster.fail_posts = 1
+    message = live(poster, limit=12)
+    await message.open()
+
+    await message.finish("alpha bravo charlie delta")
+
+    assert poster.posts == ["alpha bravo", "charlie", "delta"]
+    assert poster.updates == []
+
+
+async def test_a_frame_is_never_longer_than_a_message() -> None:
+    """A frame Slack refuses is a frame that never appears, and past the limit
+    it simply stops changing — which stops the writes with it."""
+    poster = FakePoster()
+    message = live(poster, limit=12)
+    await message.open()
+    try:
+        for _ in range(40):
+            await message.delta(text("word "))
+            await ticks(1)
+    finally:
+        await message.aclose()
+
+    assert poster.updates, "it did paint"
+    assert all(len(frame) <= 12 for frame in poster.updates)
+
+
+# -- a refusal, told from a rate limit ----------------------------------------
+
+
+async def test_a_refused_rewrite_posts_the_answer_instead_of_losing_it() -> None:
+    """An edit window that closed is about the placeholder, not about the
+    answer. The answer is postable, so it is posted."""
+    poster = FakePoster()
+    message = live(poster)
+    await message.open()
+    poster.deny_updates = 1
+
+    await message.finish("It was Tuesday.")
+
+    assert poster.posts == [THINKING, "It was Tuesday."], "in the thread, once"
+
+
+async def test_a_refusal_is_not_waited_out_like_a_rate_limit() -> None:
+    """`FINAL_ATTEMPTS` exists for "not so fast". Spending it on "no" is how
+    a turn takes three sleeps to arrive at the same answer."""
+    poster = FakePoster()
+    message = live(poster)
+    await message.open()
+    poster.deny_updates = FINAL_ATTEMPTS + 5
+
+    await message.finish("It was Tuesday.")
+
+    assert poster.deny_updates == FINAL_ATTEMPTS + 4, "it asked once"
+
+
+async def test_an_answer_slack_will_not_take_at_all_still_fails_the_turn() -> None:
+    """The turn has to fail for the row to be dead-lettered with the reason.
+    What must not happen is the turn being *retried*, and that is `Inbox.fail`'s
+    half of #258."""
+    poster = FakePoster()
+    message = live(poster)
+    await message.open()
+    poster.deny_updates = 1
+    poster.deny_posts = 1
+
+    with pytest.raises(SlackRefused):
+        await message.finish("It was Tuesday.")

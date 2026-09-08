@@ -90,6 +90,24 @@ class BudgetExceededError(LLMError):
     """A non-interactive model call was stopped by the daily spend ceiling."""
 
 
+class DeliveryRefused(SiattError):
+    """A surface refused an answer, and would refuse the identical one again.
+
+    The egress counterpart of an `LLMError` whose `retryable` is False, and it
+    exists for the same reason: the queue's default is to run the work again,
+    and running a turn again means paying for the model call again. That is the
+    right default for a blip and the wrong one for a refusal — five identical
+    rejections, and an answer the person never sees while the retry, reading
+    that answer in its own history, tells them it has already been posted
+    (#258).
+
+    Raising it says the delivery cannot be made to work by repeating it, so the
+    inbox dead-letters the row rather than backing off. A dead letter is the
+    record: `siatt inbox` lists it with the reason, and reviving it is a
+    decision somebody makes after fixing whatever refused.
+    """
+
+
 class ToolError(SiattError):
     """A tool could not be dispatched, or failed in a way the agent should see."""
 

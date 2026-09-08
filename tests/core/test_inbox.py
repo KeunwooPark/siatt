@@ -13,7 +13,7 @@ from typing import Any
 from siatt.core.backoff import Backoff
 from siatt.core.events import InboundEvent
 from siatt.core.inbox import Dispatcher, Inbox, LeasedEvent
-from siatt.errors import StoreError
+from siatt.errors import AuthError, DeliveryRefused, StoreError, TransientError
 from siatt.store import Store
 from tests.conftest import until
 
@@ -142,6 +142,37 @@ async def test_a_payload_this_build_cannot_read_is_dead_lettered_at_once(store: 
 
     assert await inbox.lease() == []
     assert await inbox.counts() == {"failed": 1}
+
+
+async def test_an_answer_the_surface_refused_is_not_answered_again(store: Store) -> None:
+    """#258. A turn costs a model call, so five identical refusals cost five of
+    them — and the person watching the thread sees none of the five."""
+    inbox = Inbox(store)
+    await inbox.enqueue(event("E1"))
+    leased = await inbox.lease()
+
+    assert await inbox.fail(leased[0], DeliveryRefused("Slack refused it (msg_too_long)")) is False
+    assert await inbox.counts() == {"failed": 1}
+    assert "msg_too_long" in (await inbox.dead_letters())[0]["last_error"]
+
+
+async def test_a_provider_that_will_reject_it_again_is_not_asked_again(store: Store) -> None:
+    """The same rule on the other half of the turn, and the one this one was
+    modelled on."""
+    inbox = Inbox(store)
+    await inbox.enqueue(event("E1"))
+
+    assert await inbox.fail((await inbox.lease())[0], AuthError("bad key")) is False
+    assert await inbox.counts() == {"failed": 1}
+
+
+async def test_a_blip_on_either_half_still_gets_its_retries(store: Store) -> None:
+    """What must not have been broken: the default is still to try again."""
+    inbox = Inbox(store)
+    await inbox.enqueue(event("E1"))
+
+    assert await inbox.fail((await inbox.lease())[0], TransientError("5xx")) is True
+    assert await inbox.counts() == {"pending": 1}
 
 
 # -- the dispatcher ----------------------------------------------------------

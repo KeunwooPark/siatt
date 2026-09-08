@@ -23,7 +23,7 @@ from typing import Any
 from siatt.core.backoff import Backoff
 from siatt.core.drain import Drainer
 from siatt.core.events import EventError, InboundEvent
-from siatt.errors import LLMError
+from siatt.errors import DeliveryRefused, LLMError
 from siatt.store import Store
 
 log = logging.getLogger(__name__)
@@ -46,6 +46,20 @@ DONE_RETENTION = timedelta(days=7)
 
 #: A handler that returns is a delivery; one that raises is a failed attempt.
 EventHandler = Callable[[InboundEvent], Awaitable[None]]
+
+
+def _hopeless(error: BaseException | str) -> bool:
+    """Whether repeating this delivery could not possibly do better.
+
+    Both halves of a turn can say so, and both are worth listening to for the
+    same reason: an attempt costs a model call. A provider that rejected the
+    request will reject it again, and a surface that refused the answer will
+    refuse it again — the difference between five of those and one is four
+    model calls and four minutes of a thread saying nothing.
+    """
+    if isinstance(error, DeliveryRefused):
+        return True
+    return isinstance(error, LLMError) and not error.retryable
 
 
 def _stamp(moment: datetime) -> str:
@@ -158,7 +172,7 @@ class Inbox:
         """Record a failed delivery. False once the row is dead-lettered."""
         reason = f"{type(error).__name__}: {error}" if isinstance(error, BaseException) else error
         delay = self._backoff.delay_after(item.attempts)
-        if delay is None or (isinstance(error, LLMError) and not error.retryable):
+        if delay is None or _hopeless(error):
             log.error("inbox %s failed %d time(s), giving up: %s", item.id, item.attempts, reason)
             await self._store.fail_inbox(item.id, error=reason)
             return False

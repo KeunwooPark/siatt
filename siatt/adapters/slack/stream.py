@@ -22,6 +22,16 @@ Frames are droppable but not reorderable. Only one write is ever in flight, and
 the answer is written after the last frame has landed rather than on top of one
 still on its way — see `_stop_painting` for why cancelling is not enough (#192).
 
+The answer is not droppable at all, and two things it used to be lost to are
+handled here rather than raised. An answer longer than one message becomes
+several, in order, the first of them in the message that was being rewritten
+(`siatt.adapters.slack.limits`). And a refusal that names *this message* — an
+edit window that closed, a placeholder somebody deleted — posts the answer as a
+new message instead of taking the turn down with it. What is still raised is a
+refusal of the answer itself, which no repetition would satisfy: it fails the
+turn once, and the inbox dead-letters it rather than paying for the model call
+four more times (#258).
+
 No `slack_sdk` import. What it needs is two calls — post one message, rewrite
 one message — and taking them as a protocol is what lets the throttling and
 the degradation be tested without a socket or the `slack` extra.
@@ -31,10 +41,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from siatt.errors import SiattError
+from siatt.adapters.slack.limits import MAX_TEXT, split
+from siatt.errors import DeliveryRefused, SiattError
 from siatt.llm.types import Delta, MessageStop, TextDelta, ToolUseStart
 
 log = logging.getLogger(__name__)
@@ -69,6 +82,21 @@ class SlackRateLimited(SiattError):
         self.retry_after = retry_after
 
 
+class SlackRefused(DeliveryRefused):
+    """Slack refused a write, and would refuse the identical one again.
+
+    Told from `SlackRateLimited` by `siatt.adapters.slack.app._translate`,
+    which is where Slack's error codes are read. Everything not on either list
+    stays an ordinary exception and keeps the old behaviour — a failed turn
+    that is delivered again — because an unrecognised code is more likely to be
+    something we have not seen go wrong yet than something permanent.
+    """
+
+    def __init__(self, code: str) -> None:
+        super().__init__(f"Slack refused it ({code})" if code else "Slack refused it")
+        self.code = code
+
+
 class Poster(Protocol):
     """The two writes a live reply needs, and nothing else."""
 
@@ -90,11 +118,13 @@ class LiveMessage:
         thread_ts: str | None,
         interval: float = DEFAULT_INTERVAL,
         ts: str | None = None,
+        limit: int = MAX_TEXT,
     ) -> None:
         self._poster = poster
         self._channel = channel
         self._thread_ts = thread_ts
         self._interval = interval
+        self._limit = limit
         #: A `ts` handed in is a message from an earlier attempt at this same
         #: turn, which is reused rather than added to. Without it a turn that
         #: failed and was redelivered leaves a "thinking…" message behind in
@@ -162,19 +192,33 @@ class LiveMessage:
                 pass
 
     async def finish(self, text: str) -> None:
-        """Stop redrawing and write the answer, whatever happened before it."""
+        """Stop redrawing and write the answer, whatever happened before it.
+
+        In as many messages as it takes. One is the ordinary case and the only
+        one the rest of this class is about; a long answer is the case that
+        used to be refused outright, and the parts after the first go into the
+        thread under the message that was being rewritten.
+        """
         await self._stop_painting()
-        final = text.strip()
-        if not final:
+        parts = split(text, self._limit)
+        if not parts:
             # `AgentResult.note` fills this in for every stop reason there is,
             # so an empty answer here means something upstream changed. The
             # placeholder must still be replaced: a message reading "thinking…"
             # forever is worse than one saying nothing came back.
-            final = "_the turn produced no answer._"
+            parts = ["_the turn produced no answer._"]
+        head, rest = parts[0], parts[1:]
         if self._ts is None:
-            await self._poster.post(channel=self._channel, thread_ts=self._thread_ts, text=final)
-            return
-        await self._write_final(final)
+            await self._attempt(functools.partial(self._post, head))
+        else:
+            await self._write_final(head)
+        # A part that does not land raises, and the turn is delivered again —
+        # which re-posts the parts that did. At-least-once is the inbox's
+        # promise and this is where it costs something: a reader may see the
+        # first half of a long answer twice. Sending nothing at all was the
+        # alternative, and it is worse.
+        for part in rest:
+            await self._attempt(functools.partial(self._post, part))
 
     async def aclose(self) -> None:
         """Give up on the painter without writing anything.
@@ -205,7 +249,13 @@ class LiveMessage:
         if self._tools:
             running = ", ".join(f"`{name}`" for name in dict.fromkeys(self._tools))
             parts.append(f"_running {running}…_")
-        return "\n\n".join(parts) or THINKING
+        frame = "\n\n".join(parts) or THINKING
+        # One message, because that is what it is being written into. Past the
+        # limit the frame simply stops changing, which stops the writes too —
+        # `_paint` skips a frame that says what the last one said. A progress
+        # indicator that freezes near the end of a long answer is a fair trade
+        # for one that Slack refuses; `finish` writes the whole of it.
+        return next(iter(split(frame, self._limit)), THINKING)
 
     async def _paint(self) -> None:
         while True:
@@ -255,19 +305,51 @@ class LiveMessage:
         with contextlib.suppress(asyncio.CancelledError):
             await painter
 
-    async def _write_final(self, final: str) -> None:
-        assert self._ts is not None
+    async def _post(self, text: str) -> None:
+        """One more message in the thread. The `ts` is nobody's business here —
+        this class rewrites one message, and the rest are written once."""
+        await self._poster.post(channel=self._channel, thread_ts=self._thread_ts, text=text)
+
+    async def _attempt(self, write: Callable[[], Awaitable[None]]) -> None:
+        """Make one write land, waiting out a rate limit but not a refusal.
+
+        The retry is for "not so fast", which is the one answer where trying
+        the same thing again is the correct response. A refusal is passed
+        straight through: repeating it is what #258 is about.
+        """
         for attempt in range(1, FINAL_ATTEMPTS + 1):
             try:
                 # Uncontended by now — `_stop_painting` sealed the message —
                 # but taken all the same, so "one write at a time" is a
                 # property of the class rather than of the order it is called in.
                 async with self._writing:
-                    await self._poster.update(channel=self._channel, ts=self._ts, text=final)
+                    await write()
             except SlackRateLimited as limit:
                 if attempt == FINAL_ATTEMPTS:
                     raise
                 await asyncio.sleep(limit.retry_after)
             else:
-                self._painted = final
                 return
+
+    async def _write_final(self, final: str) -> None:
+        ts = self._ts
+        assert ts is not None
+        try:
+            await self._attempt(
+                functools.partial(self._poster.update, channel=self._channel, ts=ts, text=final)
+            )
+        except SlackRefused as refusal:
+            # About the message, not about the answer. A placeholder can be
+            # deleted, or sit past whatever window Slack allows an edit in,
+            # while the answer it was holding a place for is perfectly
+            # postable — so it is posted, and the turn stands. A refusal of the
+            # answer itself raises again from here and fails the turn once.
+            log.warning(
+                "could not rewrite %s in %s (%s); posting the answer instead",
+                ts,
+                self._channel,
+                refusal.code or "no code",
+            )
+            await self._attempt(functools.partial(self._post, final))
+        else:
+            self._painted = final
