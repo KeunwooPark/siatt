@@ -369,6 +369,39 @@ nothing about it looks wrong. So a generated file is stored as `generated` and
 no memory can cite one. It can still be sent, and sent again; it cannot become a
 footnote.
 
+## Answering in more than one message
+
+An answer used to be one message, and nothing said so. A turn that decided its
+answer read better in three — *"I'll send it section by section"* — wrote the
+first section, ended the turn expecting to continue, and the other two were
+never written. Not a failure anything could report: the model was not refused,
+it was mistaken about what a turn is.
+
+Two rules now, and the difference between them is whose choice the break is.
+
+**A long answer arrives in as many messages as it needs**, cut at the largest
+structure that fits — a blank line, then a line, then a word — so a digest of
+five items splits between items rather than mid-sentence. Nothing is truncated;
+what changes is which message carries a character. This happens whether or not
+the turn asked for it, and it is why an answer no longer has to fit anywhere.
+
+**`send_message(text)` ends one message and keeps going**, for a break the
+reader would want: three sections, or a long piece of work handed over as it
+goes. At most four before the one the turn ends with, the same kind of bound as
+`send_file`, and checked against the surface before anything is recorded — on a
+terminal an answer is one stream of text, so the tool is not registered there at
+all rather than offering something the surface cannot do. Nothing is posted
+during the turn: the parts are recorded and delivered with the answer, so a turn
+that fails has posted nothing and its retry is the same turn rather than half of
+one plus another whole one.
+
+A refusal from Slack is now told from a rate limit and from a blip. Waiting is
+the right answer to a 429 and the wrong answer to `msg_too_long`; a refusal
+about the placeholder — an edit window that closed, a message somebody deleted —
+posts the answer rather than losing it with the message; and a refusal of the
+answer itself fails the turn once and dead-letters, instead of buying four more
+identical model calls.
+
 ## Development
 
 ```bash

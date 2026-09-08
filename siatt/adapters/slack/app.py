@@ -121,6 +121,9 @@ class SlackAdapter:
             # there is nothing on disk to send, and the honest answer to the
             # model is the same one a terminal gives.
             sends_files=attachments is not None,
+            # And an answer here is a thread of messages rather than one
+            # stream of text, so a turn may end one and begin another (#259).
+            sends_messages=True,
         )
         self._handler: AsyncSocketModeHandler | None = None
         self._register()
@@ -401,14 +404,14 @@ class SlackAdapter:
         What a build with `stream: false` uses, and what a standing task gets:
         nobody is watching either, so the first anyone sees is the answer.
 
-        In as many messages as the answer needs. The parts after the first go
-        *under* the first — `event.reply_to` when there is a thread already,
-        and otherwise the message this turn has just made into one, which is
-        the same thread `opened_thread` is about to record. A standing task
-        that posts three sections must not post three top-level messages.
+        In as many messages as the answer needs — the ones the turn asked for
+        (#259), each cut again if it is still too long for one (#258). They go
+        *under* the first: `event.reply_to` when there is a thread already, and
+        otherwise the message this turn has just made into one, which is the
+        same thread `opened_thread` is about to record. A standing task that
+        posts three sections must not post three top-level messages.
         """
-        text = answer(result)
-        parts = split(text) if text else []
+        parts = [part for message in messages(result) for part in split(message)]
         if not parts or not event.channel:
             log.warning("nothing to post for %s", event.external_id)
             return
@@ -511,6 +514,20 @@ def answer(result: AgentResult) -> str:
     return text
 
 
+def messages(result: AgentResult) -> list[str]:
+    """Every message this turn asked for, in the order it asked (#259).
+
+    The parts a turn queued, then the answer it ended with. The note goes on
+    the last of them and nowhere else: it explains how the turn stopped, and a
+    turn stops once however many messages it took to get there.
+
+    An empty one is dropped rather than sent. A turn that queued its sections
+    and had nothing left to add ends with no text, and Slack will not take an
+    empty message anyway.
+    """
+    return [message for message in (*result.parts, answer(result)) if message.strip()]
+
+
 class _Live:
     """A turn whose answer is a message already in the thread."""
 
@@ -523,7 +540,7 @@ class _Live:
         await self._message.delta(delta)
 
     async def finish(self, result: AgentResult) -> None:
-        await self._message.finish(answer(result))
+        await self._message.finish(*messages(result))
         # Only now: until the answer is in the thread, a redelivery of this
         # event should rewrite this message rather than post another.
         self._adapter._forget(self._event.external_id)

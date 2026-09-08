@@ -132,6 +132,12 @@ class AgentResult:
     #: a surface that cannot send files, because the tool refused before it
     #: resolved anything.
     attachments: tuple[Attachment, ...] = ()
+    #: Messages this turn asked to send before the one it ends with, in the
+    #: order it named them (#259). `text` is the last message, not the only
+    #: one, and a surface that delivers these delivers them ahead of it.
+    #: Empty on a surface that shows one continuous answer, because the tool
+    #: refused before it recorded anything.
+    parts: tuple[str, ...] = ()
     credential_scrubbed: bool = False
 
     @property
@@ -179,7 +185,11 @@ class AgentResult:
                 operational = "the provider stopped this reply before it finished."
             case "tool_use":
                 operational = "the model asked for a tool that was never run."
-            case _ if not self.text.strip():
+            # `parts` counts as having answered: a turn that queued its
+            # sections and ended with nothing left to add has said everything
+            # it meant to, and telling the reader the model returned nothing
+            # would contradict the messages above it (#259).
+            case _ if not self.text.strip() and not self.parts:
                 operational = "the model returned nothing."
             case _:
                 operational = None
@@ -299,6 +309,7 @@ class Agent:
         tz: str | tzinfo | None = None,
         attachments: Sequence[str] = (),
         can_send_files: bool = False,
+        sends_messages: bool = False,
     ) -> AgentResult:
         await self._store.ensure_session(session_id, surface=surface, scope=scope)
         # `external_id` is the surface's own key for this message, and it is
@@ -330,6 +341,11 @@ class Agent:
             # says otherwise, so a new one is mute about attachments rather
             # than promising something nobody wired up.
             can_send_files=can_send_files,
+            # And whether this way out is a thread of messages rather than one
+            # stream of text. False on the same terms and for the same reason:
+            # a turn that ends a message meaning to begin another one has
+            # stopped mid-answer wherever that is not true (#259).
+            sends_messages=sends_messages,
         )
         # Built once, outside the loop: it is the same on every pass, and the
         # system block is the head of the cacheable prefix.
@@ -448,6 +464,7 @@ class Agent:
             # read at the end rather than built alongside `recalled`.
             memory_ids=list(dict.fromkeys([*recalled, *context.recalled])),
             attachments=await self._outgoing(context.outgoing, scope),
+            parts=tuple(context.parts),
             credential_scrubbed=credential_scrubbed,
         )
 

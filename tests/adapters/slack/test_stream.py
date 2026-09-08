@@ -459,3 +459,42 @@ async def test_an_answer_slack_will_not_take_at_all_still_fails_the_turn() -> No
 
     with pytest.raises(SlackRefused):
         await message.finish("It was Tuesday.")
+
+
+# -- an answer the turn decided has parts -------------------------------------
+
+
+async def test_the_messages_a_turn_asked_for_are_the_messages_it_gets() -> None:
+    """#259, and the break is the turn's rather than the character count's."""
+    poster = FakePoster()
+    message = live(poster, limit=100)
+    await message.open()
+
+    await message.finish("section ①", "section ②", "section ③")
+
+    assert poster.updates == ["section ①"], "the first went where the placeholder was"
+    assert poster.posts == [THINKING, "section ②", "section ③"]
+
+
+async def test_a_part_too_long_for_a_message_is_still_cut() -> None:
+    """The two rules compose. A turn that chose three sections gets three, and
+    a section Slack will not take in one message is cut where it fits (#258)."""
+    poster = FakePoster()
+    message = live(poster, limit=12)
+    await message.open()
+
+    await message.finish("alpha bravo charlie", "delta")
+
+    assert poster.updates == ["alpha bravo"]
+    assert poster.posts == [THINKING, "charlie", "delta"], "in order, across both rules"
+
+
+async def test_an_empty_part_is_not_a_message() -> None:
+    poster = FakePoster()
+    message = live(poster, limit=100)
+    await message.open()
+
+    await message.finish("section ①", "   ", "section ②")
+
+    assert poster.posts == [THINKING, "section ②"]
+    assert poster.updates == ["section ①"]
