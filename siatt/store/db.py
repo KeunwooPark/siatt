@@ -1497,17 +1497,26 @@ class Store:
         state: str | None = None,
         owner: str | None = None,
         session_id: str | None = None,
+        channel: str | None = None,
     ) -> list[dict[str, Any]]:
         """Tasks, oldest first, narrowed however the caller is allowed to see.
 
-        `owner` and `session_id` are the narrowing the `schedule_*` tools use,
-        and they are the reason this takes them rather than filtering in Python:
-        a tool that read every row and then discarded the ones it should not
-        show has already had them (§7.1).
+        `owner`, `session_id` and `channel` are the narrowing the `schedule_*`
+        tools use, and they are the reason this takes them rather than
+        filtering in Python: a tool that read every row and then discarded the
+        ones it should not show has already had them (§7.1).
+
+        The tools pass one of `session_id` or `channel`, never both — which of
+        the two is the question those tools answer, and this only serves it.
         """
         narrowing = [
             (column, value)
-            for column, value in (("state", state), ("owner", owner), ("session_id", session_id))
+            for column, value in (
+                ("state", state),
+                ("owner", owner),
+                ("session_id", session_id),
+                ("channel", channel),
+            )
             if value is not None
         ]
         where = "".join(f" AND {column} = ?" for column, _ in narrowing)

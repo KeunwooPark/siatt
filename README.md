@@ -185,8 +185,13 @@ ask for one that posts somewhere else — not a rule that is enforced, but an
 argument that does not exist. The channel, the thread and the visibility are
 copied off the conversation, so a task set up in a DM stays in the DM, and text
 Siatt merely *reads* cannot arrange for anything to be said in a public channel.
-Listing and cancelling are scoped the same way: one thread cannot see or delete
-another's schedules. The terminal is the exception, and deliberately so:
+Listing and cancelling are scoped the same way, to your own schedules in the
+channel you are asking from: one channel cannot see or delete another's, and
+one person cannot see or delete somebody else's. The channel and not the
+thread, because a schedule set up in one thread posts to the channel, and a
+listing that could not see it from the thread next door reported a working 9am
+digest as a deleted one — and was believed. What can be listed is exactly what
+can be cancelled. The terminal is the exception, and deliberately so:
 `siatt task add --session` is the operator of the install choosing, which is a
 different thing from the model being able to.
 
