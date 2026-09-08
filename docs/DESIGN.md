@@ -1359,6 +1359,20 @@ Details that bite, in rough order of how quickly they will bite:
   mid-request abandons this side of a write Slack has already accepted, and it
   can then be applied *after* the answer, leaving the thread on a mid-sentence
   prefix of a reply that was delivered in full.
+- **An answer longer than one message becomes several**, in order, the first of
+  them in the message that was being rewritten and the rest under it. The
+  ceiling is well below anything Slack documents, because the published 40,000
+  is not the only limit that applies and the refusal arrives as an error code
+  rather than as a truncation. A standing task posting into a channel threads
+  its own parts under the message it just opened, rather than leaving three
+  top-level messages where somebody asked for one digest.
+- **A refusal is not a rate limit and is not a blip.** Waiting is the right
+  answer to a 429 and the wrong answer to `msg_too_long`; delivering the turn
+  again is the right answer to a socket that dropped and the wrong answer to a
+  revoked token. A refusal Slack names is classified at the boundary, so a
+  refusal about the *placeholder* — an edit window that closed, a message
+  somebody deleted — posts the answer instead of losing it with the message,
+  and a refusal about the answer fails the turn exactly once.
 - **Identity mapping.** Slack user id → `people/<slug>.md`, so the same person is
   one memory across channels and DMs.
 - **Reactions are free feedback.** 👍 on an answer boosts the salience of the
@@ -1750,5 +1764,8 @@ and deployment behind each endpoint. Lower `max_edge` or `max_pixels` when a
 server rejects an individual image for its media prefill limit; that limit is
 separate from the total context window. Permanent LLM errors dead-letter the
 inbox delivery immediately, while rate limits and transient failures retain
-backoff. After correcting a policy, failed deliveries can be retried through
+backoff. A surface that refuses the *answer* permanently is treated the same
+way and for the same reason: an attempt costs a model call, so five identical
+refusals cost five of them and the person watching the thread sees none of the
+five. After correcting a policy, failed deliveries can be retried through
 the existing inbox recovery command.
