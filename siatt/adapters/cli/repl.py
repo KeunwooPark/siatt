@@ -25,10 +25,8 @@ from siatt.store.blobs import Attachment, AttachmentError
 
 PROMPT = "\n› "  # noqa: RUF001 - a prompt glyph, not punctuation
 
-#: What a terminal conversation may see. The default `respond` would apply
-#: anyway; it is written out because the file listing below has to read
-#: attachments under the same scope the turn ran under, and two places quietly
-#: agreeing on a default is how they stop agreeing.
+#: What a terminal session records on its rows. The default `respond` would
+#: apply anyway; it is written out so the value has a name where it is used.
 SCOPE = "workspace"
 
 HELP = """\
@@ -135,10 +133,6 @@ class Repl:
         clickable in most terminals and copyable in the rest, and nothing has to
         be written twice.
 
-        Read under the session's scope like every other attachment read. A CLI
-        session is not a way around a scope, and the digest on the result is a
-        digest rather than a permission.
-
         Escaped, because a filename came off somebody's upload and rich would
         otherwise read `[dim]` in it as markup — the same reason the answer
         itself is written raw.
@@ -151,7 +145,7 @@ class Repl:
                 self.console.print(f"[cyan]sent[/cyan] {name} [dim]— {described}[/dim]")
                 continue
             try:
-                where = await files.path(held.sha256, scope=SCOPE)
+                where = await files.path(held.sha256)
             except AttachmentError as exc:
                 # Collected between the turn and now, or never visible from
                 # here. Either way there is no file to point at, and a path to

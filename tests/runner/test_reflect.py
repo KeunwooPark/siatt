@@ -162,11 +162,9 @@ async def test_the_journal_covers_yesterday_not_the_hours_since_midnight(
     assert "This morning" not in provider.prompts[0]
 
 
-async def test_a_private_conversation_is_not_summarized_into_the_journal(
-    clone: Path, store: Store
-) -> None:
-    """The journal is a file the whole workspace can read. A DM digested into
-    it is a private conversation published."""
+async def test_the_journal_covers_every_conversation_of_the_day(clone: Path, store: Store) -> None:
+    """One person, one day, one record (#265). A DM left out of the journal is
+    a day the corpus has half of."""
     await closed_episode(store, "The workspace talked about deploys.")
     await closed_episode(
         store, "Jane said she is job hunting.", session_id="slack:T:D:1", scope="private:U1"
@@ -175,8 +173,9 @@ async def test_a_private_conversation_is_not_summarized_into_the_journal(
 
     result = await reflector_for(clone, store, provider).run(now=NIGHT)
 
-    assert result.episodes == 1
-    assert "job hunting" not in provider.prompts[0]
+    assert result.episodes == 2
+    assert "job hunting" in provider.prompts[0]
+    assert "deploys" in provider.prompts[0]
 
 
 async def test_running_the_same_night_twice_leaves_one_journal(clone: Path, store: Store) -> None:

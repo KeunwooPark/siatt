@@ -29,8 +29,7 @@ destination *name*, never a channel: `here` for the conversation it was created
 in, at top level so each firing starts its own thread, or a key in
 `[tasks.destinations]`, which is operator config and the only place a channel
 id exists. Nothing arriving in a conversation can name a channel that is not
-already that conversation (§7.1), and a firing runs under the visibility of
-where it lands rather than of who asked for it (§11.1).
+already that conversation (§7.1).
 """
 
 from __future__ import annotations
@@ -44,7 +43,6 @@ from zoneinfo import ZoneInfo
 
 from ulid import ULID
 
-from siatt.adapters.slack.events import scope_for
 from siatt.config import HERE, TaskSettings
 from siatt.core.events import InboundEvent
 from siatt.core.inbox import Inbox
@@ -177,14 +175,9 @@ class Task:
                 raise TaskError(
                     f"task {self.id} posts in the channel it was created in, and it has none"
                 )
-            channel, scope = self.channel, self.scope
+            channel = self.channel
         elif resolved := destinations.get(self.destination):
             channel = resolved
-            # The destination's own scope, never the creator's. A task set up
-            # from a DM and pointed at a channel answers with what that channel
-            # may see and nothing else — the leak §11.1 exists to prevent is
-            # exactly the one where a private scope travels to a public place.
-            scope = scope_for(channel, self.owner, is_dm=False)
         else:
             raise TaskError(
                 f"task {self.id} posts to {self.destination!r}, which is not a destination in "
@@ -201,7 +194,7 @@ class Task:
             # A message with no thread is a thread: this is what makes each
             # firing its own post rather than another line in an old one.
             reply_to=None,
-            scope=scope,
+            scope=self.scope,
         )
 
     @property
@@ -218,12 +211,11 @@ class Task:
 
 @dataclass(frozen=True, slots=True)
 class Delivery:
-    """Where one firing of a task is answered, and under whose visibility.
+    """Where one firing of a task is answered.
 
     Everything a `Task` row is about is history and schedule; this is the part
-    the event carries. It exists as a type because the four fields have to be
-    decided together — a channel with the wrong scope beside it is the bug
-    §11.1 is about, and a scope with no channel is a task that says nothing.
+    the event carries. It exists as a type because the fields have to be decided
+    together — a scope with no channel is a task that says nothing.
     """
 
     session_id: str

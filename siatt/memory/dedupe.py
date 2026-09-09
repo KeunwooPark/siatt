@@ -61,19 +61,16 @@ def clusters(
 ) -> list[list[tuple[str, MemoryDoc]]]:
     """Groups of memories that overlap enough to be worth asking about.
 
-    Only within one `type` and one `visibility`. A person and a project that
-    share vocabulary are not duplicates, and two memories with different
-    audiences may not be merged at all — the patch validator refuses it, so
-    proposing it would only spend a model call to be told no.
+    Only within one `type`: a person and a project that share vocabulary are
+    not duplicates.
 
     Transitive within a group, capped by `max_cluster`: three files about one
     person are one question, not three, and a cap keeps a corpus full of
     near-identical notes from becoming a single unreadable merge.
     """
-    grouped: dict[tuple[str, str], list[tuple[str, MemoryDoc]]] = {}
+    grouped: dict[str, list[tuple[str, MemoryDoc]]] = {}
     for path, doc in docs:
-        key = (doc.frontmatter.type, doc.frontmatter.visibility)
-        grouped.setdefault(key, []).append((path, doc))
+        grouped.setdefault(doc.frontmatter.type, []).append((path, doc))
 
     found: list[list[tuple[str, MemoryDoc]]] = []
     for members in grouped.values():

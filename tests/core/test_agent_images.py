@@ -99,16 +99,15 @@ async def test_a_video_is_not_put_in_the_turn(
     assert provider.requests[0].messages[-1].images == ()
 
 
-async def test_an_image_from_another_scope_is_not_resurrected(
+async def test_an_image_that_is_not_in_the_store_is_not_invented(
     store: Store, tokenizer: Tokenizer, tmp_path: Path
 ) -> None:
-    """A hash is a guessable-looking string. Naming one from a channel that
-    cannot see it must produce nothing, not a picture."""
+    """A hash is a guessable-looking string. Naming one nothing points at must
+    produce nothing, not a picture."""
     attachments = files(store, tmp_path)
-    sha = await stored(attachments, scope="private:U123")
     agent, provider = build(store, tokenizer, [says("ok")], attachments=attachments)
 
-    await agent.respond("s1", "look", scope="channel:C456", attachments=[sha])
+    await agent.respond("s1", "look", attachments=["0" * 64])
 
     assert provider.requests[0].messages[-1].images == ()
 

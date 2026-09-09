@@ -405,12 +405,10 @@ async def test_an_invented_handle_is_dropped_and_the_claim_survives(
     assert json.loads(observation["attachments"]) == []
 
 
-async def test_an_extraction_cannot_cite_across_the_scope_line(
-    store: Store, tmp_path: Path
-) -> None:
-    """A photograph sent in a DM is not citable from a channel's episode, and
-    the conversation it would have been cited into is the one being closed."""
-    sha = await a_photograph(store, tmp_path, scope="private:U01")
+async def test_an_extraction_cannot_cite_outside_the_episode(store: Store, tmp_path: Path) -> None:
+    """The line is the session, not the scope: a photograph that arrived in a
+    different conversation is not citable from this episode."""
+    sha = await a_photograph(store, tmp_path, session_id="slack:T:C:elsewhere")
     await seed(store)
     await make_idle(store)
     closer, _ = closer_for(store, Scripted(assessed(), extracting(handle(sha))))

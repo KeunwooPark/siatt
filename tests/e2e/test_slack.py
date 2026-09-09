@@ -93,14 +93,16 @@ def test_slack_ingress_routing_deduplication_and_replies(
     assert at_ack["envelope-Ev-thread"] >= 3
     assert {row[2] for row in inbox} == {"done"}
     events = [json.loads(row[1]) for row in inbox]
+    # One person, one pool: a channel and a DM are the same person talking in
+    # two places, and the session rows say so (#265).
     assert [(event["session_id"], event["scope"]) for event in events] == [
-        ("slack:T_E2E:C_DEPLOY:10.001", "channel:C_DEPLOY"),
-        ("slack:T_E2E:D_PRIVATE:20.001", "private:U_USER"),
-        ("slack:T_E2E:C_DEPLOY:10.001", "channel:C_DEPLOY"),
+        ("slack:T_E2E:C_DEPLOY:10.001", "workspace"),
+        ("slack:T_E2E:D_PRIVATE:20.001", "workspace"),
+        ("slack:T_E2E:C_DEPLOY:10.001", "workspace"),
     ]
     assert sessions == [
-        ("slack:T_E2E:C_DEPLOY:10.001", "channel:C_DEPLOY"),
-        ("slack:T_E2E:D_PRIVATE:20.001", "private:U_USER"),
+        ("slack:T_E2E:C_DEPLOY:10.001", "workspace"),
+        ("slack:T_E2E:D_PRIVATE:20.001", "workspace"),
     ]
     assert [(post["channel"], post["thread_ts"]) for post in slack_server.posts] == [
         ("C_DEPLOY", "10.001"),

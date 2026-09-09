@@ -150,16 +150,17 @@ async def test_a_merged_source_is_archived_rather_than_deleted(clone: Path, stor
     assert Manifest.load(clone).resolve(second.id) is not None, "and its id still resolves"
 
 
-async def test_two_scopes_are_never_merged(clone: Path, store: Store) -> None:
-    """The validator refuses it, so proposing it would only spend a call to be
-    told no. The filter does not get that far."""
+async def test_two_old_scopes_of_one_subject_are_asked_about(clone: Path, store: Store) -> None:
+    """One person, one pool (#265). Files written when Siatt scoped memory per
+    channel are duplicates like any other, and leaving them unmergeable is what
+    left three contradicting specs of one thing in the corpus."""
     write_memory(clone, fact("Deploy ownership", DEPLOYS_A))
     write_memory(clone, fact("Deploys", DEPLOYS_B, visibility="private:U1"))
     provider = Scripted()
 
     await librarian_for(clone, store, provider).run()
 
-    assert provider.requests == []
+    assert len(provider.requests) == 1
 
 
 async def test_a_merge_plan_that_reaches_outside_its_cluster_is_ignored(
@@ -235,15 +236,16 @@ async def test_a_split_that_is_not_creates_and_one_archive_is_ignored(
     assert (clone / big.suggested_path()).exists(), "an archive on its own is not a split"
 
 
-async def test_the_parts_of_a_private_memory_stay_private(clone: Path, store: Store) -> None:
-    """A create is a new document; nothing else would catch a widened one."""
+async def test_the_parts_of_a_split_are_stamped_workspace(clone: Path, store: Store) -> None:
+    """A create is a new document; nothing else would correct one that carried
+    a visibility of its own."""
     big = fact(
         "Everything", "One subject.\n\n" + ("filler words here. " * 400), visibility="private:U1"
     )
     write_memory(clone, big)
     parts = [
-        MemoryDoc.new(type="fact", title="Part one", body="One."),
-        MemoryDoc.new(type="fact", title="Part two", body="Two."),
+        MemoryDoc.new(type="fact", title="Part one", body="One.", visibility="private:U1"),
+        MemoryDoc.new(type="fact", title="Part two", body="Two.", visibility="private:U1"),
     ]
     provider = Scripted(
         json.dumps(
@@ -257,7 +259,7 @@ async def test_the_parts_of_a_private_memory_stay_private(clone: Path, store: St
     await librarian_for(clone, store, provider, split_above_bytes=2_000).run()
 
     written = MemoryDoc.parse((clone / "memory/facts/part-one.md").read_text())
-    assert written.frontmatter.visibility == "private:U1"
+    assert written.frontmatter.visibility == "workspace"
 
 
 # -- link repair -------------------------------------------------------------

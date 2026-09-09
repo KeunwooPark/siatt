@@ -12,7 +12,7 @@ See [`docs/DESIGN.md`](docs/DESIGN.md) for the full design.
 ## Status
 
 **v1 — it remembers on purpose.** Long-term memory lives in a private git repo
-of Markdown files. Retrieval is lexical (FTS5 + BM25, scope-filtered) and runs
+of Markdown files. Retrieval is lexical (FTS5 + BM25) and runs
 on every turn; the agent can also search, read, and propose memories with tools.
 See the [milestones](https://github.com/KeunwooPark/siatt/milestones).
 
@@ -158,8 +158,11 @@ During a conversation the agent can:
 
 `memory_write` does not write a file. It queues a candidate fact that the
 consolidation job reviews, so the interactive path and the background path share
-one validated write path. Anything scoped to a DM or a private channel stays
-there: retrieval filters on visibility before it ranks.
+one validated write path.
+
+There is one pool of memory. Siatt serves one person, so a fact learned in one
+channel answers a question asked in another, and in a DM — see
+[§11.1](docs/DESIGN.md#111-one-pool).
 
 ## Standing tasks
 
@@ -182,9 +185,9 @@ first run is on a Monday.
 
 **A task answers where it was created, and nowhere else.** There is no way to
 ask for one that posts somewhere else — not a rule that is enforced, but an
-argument that does not exist. The channel, the thread and the visibility are
-copied off the conversation, so a task set up in a DM stays in the DM, and text
-Siatt merely *reads* cannot arrange for anything to be said in a public channel.
+argument that does not exist. The channel and the thread are copied off the
+conversation, so a task set up in a DM stays in the DM, and text Siatt merely
+*reads* cannot arrange for anything to be said in a public channel.
 Listing and cancelling are scoped the same way, to your own schedules in the
 channel you are asking from: one channel cannot see or delete another's, and
 one person cannot see or delete somebody else's. The channel and not the

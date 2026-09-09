@@ -33,9 +33,9 @@ _RULES = """
 - **`id` is forever.** Files move between directories as the corpus is
   reorganized; links resolve through `.siatt/manifest.json` by id, so a moved
   file keeps every inbound link. Rewriting an id orphans them.
-- **`visibility` is inherited, never widened.** A memory derived from a DM stays
-  `private:`. Retrieval filters on this before ranking, so a wrong value here is
-  the one bug that leaks a private conversation into a public channel.
+- **`visibility` is always `workspace`.** Siatt serves one person, so there is
+  one pool of memory and nothing filters on this. A fact learned in one channel
+  answers a question asked in another.
 - **One claim per memory.** Split rather than append when a file starts covering
   two subjects; the reorganizer will do it anyway, and it does it worse.
 - **Link generously** with `[[mem_01K8...]]` or `[[people/jane]]`. Both forms

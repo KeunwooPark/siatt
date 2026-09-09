@@ -37,9 +37,7 @@ async def test_large_portrait_is_bounded_without_changing_storage(
     original = picture((3213, 5712))
     attachments = AttachmentSettings(enabled=True).build(store, tmp_path / "siatt.db")
     sha = await attachments.put(original, mime="image/jpeg", source_name="slack", scope="workspace")
-    block = ImageBlock(
-        sha256=sha, mime="image/jpeg", data=await attachments.read(sha, scope="workspace")
-    )
+    block = ImageBlock(sha256=sha, mime="image/jpeg", data=await attachments.read(sha))
     provider = provider_type(model="test", api_key="k")
     try:
         payload = provider._payload(
@@ -57,7 +55,7 @@ async def test_large_portrait_is_bounded_without_changing_storage(
             assert count_message(
                 Message.user("", images=[block]), HeuristicTokenizer()
             ) == 4 + image_tokens(w, h)
-        assert await attachments.read(sha, scope="workspace") == original
+        assert await attachments.read(sha) == original
         assert block.data == original
     finally:
         await provider.aclose()

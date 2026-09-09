@@ -440,7 +440,6 @@ class SlackAdapter:
             return
         await self.uploads.send(
             result,
-            session_id=event.session_id,
             external_id=event.external_id,
             channel=event.channel,
             thread_ts=event.reply_to,

@@ -7,9 +7,8 @@ row in SQLite that nobody has committed to believing yet.
 
 The draft type is here rather than in the store because two callers build one —
 the `memory_write` tool and the extractor — and both have to agree on what the
-fields mean. `scope` in particular: it is inherited from the session, never
-chosen, because an observation made in a DM must not become workspace knowledge
-by way of a model deciding it would be more useful there.
+fields mean. `scope` in particular: it is inherited from the session and never
+chosen by a model, and since #265 that inheritance has exactly one value.
 """
 
 from __future__ import annotations

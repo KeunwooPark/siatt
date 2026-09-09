@@ -391,61 +391,65 @@ async def test_a_restated_fact_updates_the_existing_memory(clone: Path, store: S
 # -- visibility --------------------------------------------------------------
 
 
-async def test_two_scopes_of_one_subject_are_never_reconciled_together(
+async def test_one_subject_is_one_group_whatever_scope_it_came_from(
     clone: Path, store: Store
 ) -> None:
-    """A group becomes one prompt and one memory's audience. Mixing scopes in
-    it is how something said in a DM ends up in a workspace file."""
+    """The group is the subject (#265). Two claims about one person made in two
+    places are reconciled against each other, which is what makes the second an
+    update rather than a second file saying the same thing."""
     await observe(store, "Priya Raman", "Priya Raman owns deploys.", scope="workspace")
     await observe(store, "Priya Raman", "Priya Raman is job hunting.", scope="private:U1")
-    provider = Scripted("[]", "[]")
+    provider = Scripted("[]")
 
     await (await promoter_for(clone, store, provider)).run()
 
-    assert len(provider.requests) == 2
-    # One claim each. A prompt holding both is a prompt in which the private
-    # one can end up quoted into the workspace memory.
-    for prompt in provider.prompts:
-        assert ("job hunting" in prompt) != ("owns deploys" in prompt)
+    assert len(provider.requests) == 1
+    assert "job hunting" in provider.prompts[0]
+    assert "owns deploys" in provider.prompts[0]
 
 
-async def test_a_created_memory_inherits_the_group_scope(
+async def test_a_created_memory_is_stamped_workspace(
     clone: Path, store: Store, caplog: Any
 ) -> None:
-    """Corrected, not rejected. The scope is not the model's to choose, so a
+    """Corrected, not rejected. Visibility is not the model's to choose, so a
     plan that got it wrong is not a plan to argue with — and refusing it would
     throw away the fact to punish the formatting."""
     await observe(store, "Priya Raman", "Priya Raman is job hunting.", scope="private:U1")
-    # The plan asks for `workspace`, which is wider than the conversation it
-    # came from. This is the leak the whole scope discipline exists to stop.
-    provider = Scripted(creating("Priya Raman", "Job hunting."))
+    provider = Scripted(
+        creating("Priya Raman", "Job hunting.").replace(
+            '"visibility": "workspace"', '"visibility": "private:U1"'
+        )
+    )
 
     with caplog.at_level("WARNING", logger="siatt.runner.promote"):
         await (await promoter_for(clone, store, provider)).run()
 
     written = MemoryDoc.parse((clone / "memory/facts/priya-raman.md").read_text())
-    assert written.frontmatter.visibility == "private:U1"
+    assert written.frontmatter.visibility == "workspace"
     assert "set visibility" in caplog.text
 
 
-async def test_a_private_memory_is_not_offered_to_another_private_scope(
+async def test_a_memory_written_under_an_old_scope_still_competes(
     clone: Path, store: Store
 ) -> None:
-    """Retrieval is filtered to the group. A planner that cannot see a memory
-    cannot quote it into one it is writing for somebody else."""
-    secret = MemoryDoc.new(
-        type="fact",
-        title="Priya plans",
-        body="Priya Raman is job hunting.",
-        visibility="private:U1",
+    """The step that makes a restated fact an update rather than a second file.
+    A corpus file the planner cannot see is one it writes a duplicate of, which
+    is how the poster-style memories came to contradict each other (#265)."""
+    write_memory(
+        clone,
+        MemoryDoc.new(
+            type="fact",
+            title="Priya plans",
+            body="Priya Raman is job hunting.",
+            visibility="private:U1",
+        ),
     )
-    write_memory(clone, secret)
     await observe(store, "Priya Raman", "Priya Raman owns deploys.", scope="private:U2")
     provider = Scripted("[]")
 
     await (await promoter_for(clone, store, provider)).run()
 
-    assert "job hunting" not in provider.prompts[0]
+    assert "job hunting" in provider.prompts[0]
 
 
 async def test_an_update_may_not_change_visibility(clone: Path, store: Store, caplog: Any) -> None:
@@ -653,11 +657,11 @@ async def test_a_plan_that_collides_twice_is_deferred_not_asked_forever(
     assert rows[0]["attempts"] == 1
 
 
-async def test_a_colliding_memory_from_another_scope_is_never_shown(
+async def test_a_colliding_memory_is_shown_whatever_scope_it_carries(
     clone: Path, store: Store
 ) -> None:
-    """A file sitting at the path the plan wanted is not thereby a file this
-    group's audience may read."""
+    """The second ask exists so a plan that collided can be re-planned against
+    the file in the way. Withholding that file spent the ask for nothing."""
     write_memory(
         clone,
         MemoryDoc.new(
@@ -680,11 +684,10 @@ async def test_a_colliding_memory_from_another_scope_is_never_shown(
         )
     )
 
-    result = await (await promoter_for(clone, store, provider)).run()
+    await (await promoter_for(clone, store, provider)).run()
 
-    assert result.promoted == 0
-    assert len(provider.requests) == 1, "there was nothing it was allowed to be shown"
-    assert all("job-hunting" not in prompt for prompt in provider.prompts)
+    assert len(provider.requests) == 2, "it was asked again with the file in the way"
+    assert "job-hunting" in provider.prompts[1]
 
 
 async def test_two_subjects_that_want_one_path_do_not_silently_overwrite(

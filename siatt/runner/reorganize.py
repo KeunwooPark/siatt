@@ -45,7 +45,7 @@ from siatt.llm.registry import ModelRole, ProviderRegistry
 from siatt.memory.changeset import project
 from siatt.memory.consolidate import ConsolidationInput, build_request, decode_plan
 from siatt.memory.dedupe import clusters
-from siatt.memory.document import MemoryDoc, MemoryError_, new_memory_id
+from siatt.memory.document import WORKSPACE, MemoryDoc, MemoryError_, new_memory_id
 from siatt.memory.layout import ARCHIVE_DIR, INDEX_PATH
 from siatt.memory.links import Broken, repair
 from siatt.memory.ltm import ApplyResult, Change, CommitMeta, MemoryStore, MemoryStoreError, Write
@@ -114,7 +114,7 @@ about one subject is not a problem.
 Use these ids, each at most once:
 {ids}
 
-Set `created` and `updated` to {now}, and `visibility` to exactly `{scope}`.
+Set `created` and `updated` to {now}, and `visibility` to exactly `workspace`.
 
 {schema}"""
 
@@ -268,7 +268,6 @@ class Librarian:
                 original=doc.id,
                 ids="\n".join(f"  {i}" for i in (new_memory_id() for _ in range(4))),
                 now=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                scope=doc.frontmatter.visibility,
                 schema=render_schema_md(),
             ),
             {path: doc.render()},
@@ -285,12 +284,10 @@ class Librarian:
                 doc.id,
             )
             return None
-        # The parts inherit the audience of the memory they came out of. The
-        # validator refuses a widened *update*; a create is a new document, and
-        # nothing else would catch it.
+        # Stamped rather than trusted: `visibility` has one value and a split
+        # is a create, which nothing else would correct.
         scoped: list[MemoryPatch] = [
-            create.model_copy(update={"memory": _scoped(create.memory, doc.frontmatter.visibility)})
-            for create in creates
+            create.model_copy(update={"memory": _scoped(create.memory)}) for create in creates
         ]
         return [*scoped, *archives]
 
@@ -410,15 +407,15 @@ class Librarian:
 # -- helpers -----------------------------------------------------------------
 
 
-def _scoped(doc: MemoryDoc, scope: str) -> MemoryDoc:
-    if doc.frontmatter.visibility == scope:
+def _scoped(doc: MemoryDoc) -> MemoryDoc:
+    if doc.frontmatter.visibility == WORKSPACE:
         return doc
     log.warning(
-        "reorganize: a split set visibility %r on a part of a %r memory",
+        "reorganize: a split set visibility %r on a part; every memory is %r",
         doc.frontmatter.visibility,
-        scope,
+        WORKSPACE,
     )
-    fields = doc.frontmatter.model_dump() | {"visibility": scope}
+    fields = doc.frontmatter.model_dump() | {"visibility": WORKSPACE}
     return doc.model_copy(update={"frontmatter": type(doc.frontmatter).model_validate(fields)})
 
 

@@ -2,15 +2,12 @@
 
 The inbound half of this is `files.py`, and it is careful about one thing: a URL
 out of an event payload, and a bearer token that must not follow it anywhere.
-Outbound the risk is the mirror image and just as quiet — bytes leaving the
-conversation they belong to. A photograph sent in a DM is `private:<author>`
-(`scope_for`), and the only thing standing between it and a public channel is
-that the bytes are read through `Attachments.read` under the scope the turn ran
-under. That one call is the check. There is no second path to a blob here, and
-there must not be: `BlobStore` will hand back anything it is asked for, which is
-why nothing outside its own module is given one.
+Outbound, the bytes come through `Attachments.read` and nowhere else. There is
+no second path to a blob here, and there must not be: `BlobStore` will hand back
+anything it is asked for, which is why nothing outside its own module is given
+one.
 
-Three more decisions, all of them about what happens when this goes wrong.
+Three decisions, all of them about what happens when this goes wrong.
 
 **The answer goes first, the files follow.** A Slack outage then costs the
 picture rather than the reply, which is the same bargain the fetcher makes. It
@@ -40,6 +37,7 @@ from typing import Protocol
 
 from siatt.core.agent import AgentResult
 from siatt.errors import SiattError
+from siatt.memory.document import WORKSPACE
 from siatt.store import Store
 from siatt.store.blobs import Attachment, AttachmentError, Attachments
 
@@ -98,7 +96,6 @@ class SlackUploads:
         self,
         result: AgentResult,
         *,
-        session_id: str,
         external_id: str,
         channel: str | None,
         thread_ts: str | None,
@@ -111,13 +108,10 @@ class SlackUploads:
         """
         if not result.attachments or self._attachments is None or not channel:
             return
-        scope = await self._scope(session_id)
         trouble: list[str] = []
         for held in result.attachments:
             try:
-                await self._one(
-                    held, scope=scope, external_id=external_id, channel=channel, thread_ts=thread_ts
-                )
+                await self._one(held, external_id=external_id, channel=channel, thread_ts=thread_ts)
             except (AttachmentError, UploadRefused) as exc:
                 log.info("could not send %s on %s: %s", held.sha256[:12], external_id, exc)
                 trouble.append(f"{_filename(held)} — {exc}")
@@ -133,7 +127,6 @@ class SlackUploads:
         self,
         held: Attachment,
         *,
-        scope: str,
         external_id: str,
         channel: str,
         thread_ts: str | None,
@@ -146,10 +139,7 @@ class SlackUploads:
             # rewritten; the file is not sent twice.
             log.info("already sent %s on %s", held.sha256[:12], external_id)
             return
-        # The scope check, and the only one. Not the event's scope: the session
-        # is what the turn ran under, and an event cannot widen a session that
-        # was opened private.
-        data = await self._attachments.read(held.sha256, scope=scope)
+        data = await self._attachments.read(held.sha256)
         name = _filename(held)
         await self._uploader.upload(
             channel=channel, thread_ts=thread_ts, filename=name, title=name, data=data
@@ -157,24 +147,11 @@ class SlackUploads:
         await self._store.add_attachment_ref(
             sha256=held.sha256,
             source=SOURCE,
-            # The scope it was read under, which is the scope it went out to.
-            # Widening here would be widening it for everything downstream.
-            scope=scope,
+            scope=WORKSPACE,
             external_id=external_id,
             session_id=None,
             name=held.name,
         )
-
-    async def _scope(self, session_id: str) -> str:
-        """What this conversation may read, as the session recorded it.
-
-        The session rather than the event, for the reason the runtime prefers it
-        when it starts a turn: they are derived the same way and normally agree,
-        and when they do not, the record of what this conversation has been all
-        along is the one to trust.
-        """
-        row = await self._store.get_session(session_id)
-        return str(row["scope"]) if row and row.get("scope") else "workspace"
 
     async def _say(self, channel: str, thread_ts: str | None, trouble: list[str]) -> None:
         head = "I could not send the file:" if len(trouble) == 1 else "I could not send:"

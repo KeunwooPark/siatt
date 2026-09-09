@@ -5,9 +5,9 @@ to cut on a character count. A memory file is already structured — a title, so
 tags, prose under headings — so the cuts follow that structure and fall back to
 size only when a section is genuinely too long to return whole.
 
-Each chunk carries the scope and salience of the memory it came from. That is
-denormalization on purpose: retrieval has to filter by scope *before* it ranks,
-and a filter that needs a join is a filter somebody eventually applies after.
+Each chunk carries the salience of the memory it came from. That is
+denormalization on purpose: ranking reads it on every row, and a score that
+needs a join is one paid for per candidate.
 """
 
 from __future__ import annotations

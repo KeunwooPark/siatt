@@ -44,16 +44,17 @@ def test_a_person_and_a_project_are_never_compared() -> None:
     assert clusters(group(person, project), threshold=0.45, max_cluster=4, max_clusters=10) == []
 
 
-def test_two_audiences_are_never_compared() -> None:
-    """The patch validator refuses to merge them, so proposing it would only
-    spend a call to be told no."""
-    assert (
-        find(
-            fact("Deploy ownership", SAME_A),
-            fact("Deploys", SAME_B, visibility="private:U1"),
-        )
-        == []
+def test_two_scopes_of_one_subject_are_one_question() -> None:
+    """The corpus still holds files written when Siatt scoped memory per
+    channel, and two of them saying the same thing are a duplicate like any
+    other -- which is how the poster-style memories came to compete (#265)."""
+    found = find(
+        fact("Deploy ownership", SAME_A),
+        fact("Deploys", SAME_B, visibility="private:U1"),
     )
+
+    assert len(found) == 1
+    assert len(found[0]) == 2
 
 
 def test_three_files_about_one_thing_are_one_question() -> None:

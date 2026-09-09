@@ -86,14 +86,12 @@ def _row(entry: ManifestEntry, *, relative_to: str | None = None) -> str:
 
     An ordinary Markdown link, not a wikilink: these files are read on GitHub,
     where a wikilink is four literal brackets and a relative path is a link
-    somebody can click. Visibility is shown because a corpus where everything
-    looks alike is one where nobody notices that half of it came from DMs.
+    somebody can click.
     """
     target = entry.path.removeprefix(f"{MEMORY_DIR}/")
     if relative_to:
         target = target.removeprefix(f"{relative_to}/")
-    scope = "" if entry.visibility == "workspace" else f" _({entry.visibility})_"
-    return f"- [{entry.title}]({target}){scope}"
+    return f"- [{entry.title}]({target})"
 
 
 def _live(manifest: Manifest) -> list[ManifestEntry]:

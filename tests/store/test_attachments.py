@@ -60,8 +60,8 @@ async def test_put_stores_bytes_and_returns_their_hash(store: Store, tmp_path: P
     sha = await files.put(PNG, mime="image/png", source_name="slack", scope="workspace")
 
     assert sha == hashlib.sha256(PNG).hexdigest()
-    assert await files.read(sha, scope="workspace") == PNG
-    held = await files.get(sha, scope="workspace")
+    assert await files.read(sha) == PNG
+    held = await files.get(sha)
     assert held is not None
     assert (held.mime, held.size) == ("image/png", len(PNG))
 
@@ -94,66 +94,39 @@ async def test_a_redelivery_of_one_arrival_is_one_ref(store: Store, tmp_path: Pa
     assert refs[0]["n"] == 1
 
 
-# -- scope -------------------------------------------------------------------
+# -- one pool (#265) ---------------------------------------------------------
 
 
-async def test_a_dm_blob_is_invisible_from_a_channel(store: Store, tmp_path: Path) -> None:
-    """The failure this table exists to prevent: a picture from a DM turning up
-    in a public channel because somebody knew its hash."""
+async def test_a_blob_that_arrived_anywhere_is_readable(store: Store, tmp_path: Path) -> None:
+    """One person, one pool. A picture sent in a DM is the same person's picture
+    in a channel, and reading it is not a permission question (#265)."""
     files = attachments(store, tmp_path)
     sha = await files.put(PNG, mime="image/png", source_name="slack", scope="private:U123")
 
-    assert await files.get(sha, scope="private:U123") is not None
-    assert await files.get(sha, scope="channel:C456") is None
-    with pytest.raises(AttachmentError, match="not visible"):
-        await files.read(sha, scope="channel:C456")
+    assert await files.get(sha) is not None
+    assert await files.read(sha) == PNG
 
 
-async def test_a_workspace_blob_is_visible_everywhere(store: Store, tmp_path: Path) -> None:
+async def test_a_blob_nothing_points_at_is_not_readable(store: Store, tmp_path: Path) -> None:
+    """The one refusal left: the row is what says these bytes are the store's."""
     files = attachments(store, tmp_path)
-    sha = await files.put(PNG, mime="image/png", source_name="slack", scope="workspace")
-    assert await files.get(sha, scope="private:U123") is not None
+    with pytest.raises(AttachmentError, match="not in the store"):
+        await files.read("0" * 64)
 
 
-async def test_a_public_arrival_does_not_widen_a_private_one(store: Store, tmp_path: Path) -> None:
-    """One set of bytes, two arrivals. The narrow one must stay narrow even
-    though the wide one deduplicated onto the same blob."""
-    files = attachments(store, tmp_path)
-    public = await a_message(store)
-    sha = await files.put(PNG, mime="image/png", source_name="slack", scope="private:U123")
-    await files.put(
-        PNG,
-        mime="image/png",
-        source_name="slack",
-        scope="channel:C456",
-        message_id=public,
-    )
-
-    # The blob is now reachable from the channel — because it genuinely arrived
-    # there — but the DM's own arrival is not what granted that.
-    private_refs = await store.raw(
-        "SELECT scope FROM attachment_refs WHERE sha256 = ? ORDER BY scope", (sha,)
-    )
-    assert [row["scope"] for row in private_refs] == ["channel:C456", "private:U123"]
-    # And a third conversation that saw neither arrival still sees nothing.
-    assert await files.get(sha, scope="private:U999") is None
-
-
-async def test_for_message_filters_before_it_returns(store: Store, tmp_path: Path) -> None:
+async def test_for_message_returns_what_arrived_on_it(store: Store, tmp_path: Path) -> None:
     files = attachments(store, tmp_path)
     message = await a_message(store)
     await files.put(
         PNG,
         mime="image/png",
         source_name="slack",
-        scope="private:U123",
+        scope="workspace",
         message_id=message,
-        name="secret.png",
+        name="shot.png",
     )
 
-    seen = await files.for_message(message, scope="private:U123")
-    assert [a.name for a in seen] == ["secret.png"]
-    assert await files.for_message(message, scope="channel:C456") == []
+    assert [a.name for a in await files.for_message(message)] == ["shot.png"]
 
 
 # -- what a conversation may cite --------------------------------------------
@@ -173,12 +146,12 @@ async def test_a_session_sees_what_arrived_in_it(store: Store, tmp_path: Path) -
         name="shot.png",
     )
 
-    rows = await store.attachments_for_session("s1", scope="workspace")
+    rows = await store.attachments_for_session("s1")
 
     assert [(r["sha256"], r["name"]) for r in rows] == [
         (hashlib.sha256(PNG).hexdigest(), "shot.png")
     ]
-    assert await store.attachments_for_session("s2", scope="workspace") == []
+    assert await store.attachments_for_session("s2") == []
 
 
 async def test_a_ref_is_found_through_the_message_it_arrived_on(
@@ -190,20 +163,18 @@ async def test_a_ref_is_found_through_the_message_it_arrived_on(
     message = await a_message(store, "s1")
     await files.put(PNG, mime="image/png", source_name="cli", scope="workspace", message_id=message)
 
-    rows = await store.attachments_for_session("s1", scope="workspace")
+    rows = await store.attachments_for_session("s1")
     assert len(rows) == 1
 
 
-async def test_a_session_cannot_cite_across_the_scope_line(store: Store, tmp_path: Path) -> None:
-    """A DM's photograph is not citable from a channel that shares its session
-    id, for the same reason it is not readable there."""
+async def test_what_a_session_may_cite_is_what_arrived_in_it(store: Store, tmp_path: Path) -> None:
+    """The line is the session, not the scope: a model may cite a file somebody
+    sent where it is being asked, and nothing else (#265)."""
     files = attachments(store, tmp_path)
-    await files.put(
-        PNG, mime="image/png", source_name="slack", scope="private:U123", session_id="s1"
-    )
+    await files.put(PNG, mime="image/png", source_name="slack", scope="workspace", session_id="s1")
 
-    assert await store.attachments_for_session("s1", scope="private:U123") != []
-    assert await store.attachments_for_session("s1", scope="channel:C456") == []
+    assert await store.attachments_for_session("s1") != []
+    assert await store.attachments_for_session("s2") == []
 
 
 async def test_one_picture_sent_twice_is_one_thing_to_cite(store: Store, tmp_path: Path) -> None:
@@ -220,7 +191,7 @@ async def test_one_picture_sent_twice_is_one_thing_to_cite(store: Store, tmp_pat
             name=name,
         )
 
-    rows = await store.attachments_for_session("s1", scope="workspace")
+    rows = await store.attachments_for_session("s1")
 
     assert [r["name"] for r in rows] == ["first.png"]
 
@@ -268,7 +239,7 @@ async def test_video_is_kept_by_default(store: Store, tmp_path: Path) -> None:
     sha = await files.put(
         b"\x00\x00\x00 ftypmp42", mime="video/mp4", source_name="slack", scope="workspace"
     )
-    assert await files.get(sha, scope="workspace") is not None
+    assert await files.get(sha) is not None
 
 
 # -- what is on disk ---------------------------------------------------------
@@ -311,7 +282,7 @@ async def test_reading_bytes_that_are_not_there_says_so(store: Store, tmp_path: 
     settings.blobs(tmp_path / "siatt.db").path(sha).unlink()
 
     with pytest.raises(AttachmentError, match="not on disk"):
-        await files.read(sha, scope="workspace")
+        await files.read(sha)
 
 
 # -- doing nothing by default ------------------------------------------------

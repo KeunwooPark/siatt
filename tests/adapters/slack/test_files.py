@@ -137,21 +137,20 @@ async def test_a_redirect_is_not_followed(store: Store, tmp_path: Path) -> None:
 # -- what may be stored ------------------------------------------------------
 
 
-async def test_an_image_is_stored_under_the_events_scope(store: Store, tmp_path: Path) -> None:
-    """A picture sent in a DM is private for the same reason its text is."""
+async def test_an_image_is_stored_and_recorded_as_an_arrival(store: Store, tmp_path: Path) -> None:
+    """The ref is what makes the bytes findable: the message it came on, the
+    name the surface gave it, and the scope the event carried."""
     attachments = store_for(store, tmp_path)
     fetcher = files(attachments)
 
-    prepared = await fetcher.collect(event(png(), scope="private:U123"))
+    prepared = await fetcher.collect(event(png()))
 
-    sha = hashlib.sha256(PNG).hexdigest()
-    assert await attachments.get(sha, scope="private:U123") is not None
-    assert await attachments.get(sha, scope="channel:C999") is None
+    assert await attachments.get(hashlib.sha256(PNG).hexdigest()) is not None
     assert "attached below, and Siatt can see it" in prepared.text
     rows = await store.raw("SELECT scope, name, external_id FROM attachment_refs")
     assert rows == [
         {
-            "scope": "private:U123",
+            "scope": "workspace",
             "name": "shot.png",
             "external_id": "slack:T1:C1:1700000000.1",
         }
@@ -225,7 +224,7 @@ async def test_video_is_stored_and_said_to_be_unread(store: Store, tmp_path: Pat
 
     prepared = await fetcher.collect(event(clip))
 
-    assert await attachments.get(hashlib.sha256(MP4).hexdigest(), scope="workspace") is not None
+    assert await attachments.get(hashlib.sha256(MP4).hexdigest()) is not None
     handle = hashlib.sha256(MP4).hexdigest()[:12]
     assert f"clip.mp4 (id {handle}) — stored, but Siatt cannot read this kind of file" in (
         prepared.text

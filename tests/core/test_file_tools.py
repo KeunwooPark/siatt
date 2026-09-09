@@ -156,16 +156,15 @@ async def test_a_file_from_another_conversation_is_not_reachable(
     assert "no files in this conversation" in said
 
 
-async def test_a_file_outside_the_scope_is_not_reachable(store: Store, tmp_path: Path) -> None:
-    """A photograph sent in a DM is not sendable from a channel session."""
-    attachments = files(store, tmp_path)
-    private = await stored(attachments, scope="private:U123", name="dm.png")
-    context = ToolContext(session_id="s1", scope="channel:C456", can_send_files=True)
+async def test_a_digest_nothing_points_at_is_not_reachable(store: Store, tmp_path: Path) -> None:
+    """A hash is a guessable-looking string, and one the store has never held
+    resolves to nothing rather than to an error the model can probe."""
+    context = asking()
 
-    said = await call(store, attachments, [handle(private)], context)
+    said = await call(store, files(store, tmp_path), ["0" * 12], context)
 
     assert context.outgoing == []
-    assert "nothing was sent" in said
+    assert "no files in this conversation" in said
 
 
 async def test_an_ambiguous_prefix_is_refused_rather_than_guessed(

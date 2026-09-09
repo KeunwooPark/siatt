@@ -426,29 +426,15 @@ async def test_a_turn_with_nothing_to_say_says_why(store: Store, tokenizer: Toke
     assert client.messages == ["_the model returned nothing._"]
 
 
-async def test_a_turn_is_scoped_to_the_channel_it_came_from(
-    store: Store, tokenizer: Tokenizer
-) -> None:
-    """Retrieval filters on the session's scope before it ranks, so a scope
-    written wrong here is where a private conversation starts leaking."""
+async def test_a_channel_and_a_dm_share_one_pool(store: Store, tokenizer: Tokenizer) -> None:
+    """One person talking in two places, and one memory of both (#265). The
+    session rows record where each conversation happened; neither is fenced off
+    from what the other learned."""
     adapter, client = make_adapter(store, tokenizer)
     running = asyncio.create_task(adapter.runtime.run())
     try:
         await adapter.on_event(mention())
         await answered(client)
-    finally:
-        adapter.runtime.stop()
-        await asyncio.wait_for(running, timeout=10.0)
-
-    session = await store.get_session(f"slack:{TEAM}:C0DEPLOY:1700000000.000100")
-    assert session is not None
-    assert session["scope"] == "channel:C0DEPLOY"
-
-
-async def test_a_dm_is_scoped_to_the_person_in_it(store: Store, tokenizer: Tokenizer) -> None:
-    adapter, client = make_adapter(store, tokenizer)
-    running = asyncio.create_task(adapter.runtime.run())
-    try:
         await adapter.on_event(
             {
                 "type": "message",
@@ -456,17 +442,22 @@ async def test_a_dm_is_scoped_to_the_person_in_it(store: Store, tokenizer: Token
                 "channel": "D0PRIVATE",
                 "user": HUMAN,
                 "text": "remember that I hate standups",
-                "ts": "1700000000.000100",
+                "ts": "1700000000.000200",
             }
         )
-        await answered(client)
+        await answered(client, 2)
     finally:
         adapter.runtime.stop()
         await asyncio.wait_for(running, timeout=10.0)
 
-    session = await store.get_session(f"slack:{TEAM}:D0PRIVATE:1700000000.000100")
-    assert session is not None
-    assert session["scope"] == f"private:{HUMAN}"
+    keys = (
+        f"slack:{TEAM}:C0DEPLOY:1700000000.000100",
+        f"slack:{TEAM}:D0PRIVATE:1700000000.000200",
+    )
+    for key in keys:
+        session = await store.get_session(key)
+        assert session is not None
+        assert session["scope"] == "workspace"
 
 
 # -- streaming ----------------------------------------------------------------
@@ -942,7 +933,7 @@ async def test_an_answer_records_the_memories_behind_it(store: Store, tokenizer:
 
     answer = await store.answer_at("slack", f"slack:{TEAM}:C0DEPLOY:{client.posted[0]['ts']}")
     assert answer is not None
-    assert answer["scope"] == "channel:C0DEPLOY"
+    assert answer["session_id"] == f"slack:{TEAM}:C0DEPLOY:1700000000.000100"
 
 
 async def test_a_thumbs_up_reaches_the_memories_that_produced_the_answer(

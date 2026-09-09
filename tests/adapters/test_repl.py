@@ -78,7 +78,7 @@ async def test_a_sent_file_is_reported_with_the_path_to_it(
     printed = out.getvalue()
     assert "shot.png" in printed
     assert "image/png" in printed
-    assert str(await attachments.path(sha, scope=SCOPE)) in printed
+    assert str(await attachments.path(sha)) in printed
 
 
 async def test_a_filename_is_one_line_whatever_it_contains(
@@ -103,7 +103,7 @@ async def test_a_file_collected_since_the_turn_says_so_instead(
     sha = await kept(attachments)
     agent = asking_for_it(store, tokenizer, attachments, sha)
     session, out = repl(agent)
-    (await attachments.path(sha, scope=SCOPE)).unlink()
+    (await attachments.path(sha)).unlink()
 
     await session._turn("send it")
 

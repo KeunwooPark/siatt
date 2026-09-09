@@ -40,10 +40,10 @@ def _scrub_value(value: Any, scrub: Scrubber) -> Any:
     return scrub(value) if isinstance(value, str) else value
 
 
-#: One episode, with the two things every consolidation job asks about it that
-#: are not on the row: how much conversation it holds, and who is allowed to
-#: see what comes out of it. Written once because three queries select it, and
-#: three hand-written joins are three chances to forget the scope.
+#: One episode, with the thing every consolidation job asks about it that is
+#: not on the row: how much conversation it holds. Written once because three
+#: queries select it, and three hand-written joins are three chances to get one
+#: of them wrong.
 _EPISODE_VIEW = """
 SELECT e.id, e.session_id, e.started_at, e.ended_at, e.state, e.summary,
        e.signal_score, s.scope,
@@ -469,32 +469,28 @@ class Store:
                 row = await cur.fetchone()
             return str(row["id"]) if row else None
 
-    async def attachment(self, sha256: str, *, scope: str) -> dict[str, Any] | None:
-        """One blob, if `scope` is allowed to know it exists.
+    async def attachment(self, sha256: str) -> dict[str, Any] | None:
+        """One blob, if anything ever pointed at it.
 
-        The scope test is `EXISTS` over the refs rather than a join, because a
-        blob with a public arrival and a private one must come back once, not
-        twice -- and because the question being asked is "may this conversation
-        see these bytes at all", which any one permitted arrival answers.
+        `EXISTS` over the refs rather than a join, because a blob with two
+        arrivals must come back once and not twice.
 
-        The name is the exception, and it has to be a subquery for the same
-        reason: it lives on the arrival rather than on the blob, and there can
-        be several. The earliest permitted one wins, which is the arrival
-        `attachments_for_session` shows -- so a file named in a tool result and
-        the same file uploaded back out carry one name rather than two.
+        The name is a subquery for a related reason: it lives on the arrival
+        rather than on the blob, and there can be several. The earliest wins,
+        which is the arrival `attachments_for_session` shows -- so a file named
+        in a tool result and the same file uploaded back out carry one name
+        rather than two.
         """
         async with self._serial:
             async with self._conn.execute(
                 "SELECT a.sha256, a.mime, a.bytes, a.width, a.height, a.created_at,"
                 "       (SELECT r.name FROM attachment_refs r"
                 "          WHERE r.sha256 = a.sha256 AND r.name IS NOT NULL"
-                "            AND (r.scope = 'workspace' OR r.scope = ?)"
                 "          ORDER BY r.created_at, r.id LIMIT 1) AS name"
                 " FROM attachments a"
                 " WHERE a.sha256 = ? AND EXISTS ("
-                "   SELECT 1 FROM attachment_refs r WHERE r.sha256 = a.sha256"
-                "     AND (r.scope = 'workspace' OR r.scope = ?))",
-                (scope, sha256, scope),
+                "   SELECT 1 FROM attachment_refs r WHERE r.sha256 = a.sha256)",
+                (sha256,),
             ) as cur:
                 row = await cur.fetchone()
             return dict(row) if row else None
@@ -532,16 +528,11 @@ class Store:
             return cur.rowcount > 0
 
     async def attachment_hashes(self) -> frozenset[str]:
-        """Every blob that exists, unscoped.
+        """Every blob that exists.
 
-        Unscoped on purpose, and it is the one attachment read that is. The
-        question this answers is "did a model invent this hash", which is about
-        existence rather than visibility -- and a scoped version would silently
-        strip a legitimate reference out of a memory whose scope happened not to
-        match the job's, which is a corpus quietly losing its pointers.
-
-        Nothing is returned but the digests: a caller cannot get bytes, a name
-        or a scope out of this, so it cannot become a way around
+        The question this answers is "did a model invent this hash", which is
+        about existence. Nothing is returned but the digests: a caller cannot
+        get bytes or a name out of this, so it cannot become a way around
         `Attachments.read`.
         """
         async with self._serial:
@@ -549,7 +540,7 @@ class Store:
                 rows = await cur.fetchall()
             return frozenset(str(row["sha256"]) for row in rows)
 
-    async def attachments_for_session(self, session_id: str, *, scope: str) -> list[dict[str, Any]]:
+    async def attachments_for_session(self, session_id: str) -> list[dict[str, Any]]:
         """Everything that arrived in one conversation, oldest first.
 
         What a model may cite. `memory_write` resolves the handle it was given
@@ -557,8 +548,8 @@ class Store:
         from citing a photograph out of somebody else's conversation: an
         attachment it cannot name here is one it cannot put in a memory.
 
-        Scoped in the query, like `attachments_for_message`, and matched on the
-        ref's own `session_id` as well as its message's. A ref is written while
+        Matched on the ref's own `session_id` as well as its message's. A ref
+        is written while
         the file is being fetched, which is before the turn appends the message
         it came on -- so the ref carries the session and the message id arrives
         later, or not at all if the turn failed.
@@ -583,28 +574,22 @@ class Store:
                 " JOIN attachments a ON a.sha256 = r.sha256"
                 " LEFT JOIN messages m ON m.id = r.message_id"
                 " WHERE (r.session_id = ? OR m.session_id = ?)"
-                "   AND (r.scope = 'workspace' OR r.scope = ?)"
                 " GROUP BY a.sha256"
                 " ORDER BY created_at, a.sha256",
-                (session_id, session_id, scope),
+                (session_id, session_id),
             ) as cur:
                 rows = await cur.fetchall()
             return [dict(row) for row in rows]
 
-    async def attachments_for_message(self, message_id: str, *, scope: str) -> list[dict[str, Any]]:
-        """What came attached to one message, filtered before it is returned.
-
-        The filter is in the query rather than in the caller for the same reason
-        retrieval's is: a scope test applied after the rows are in hand is one
-        an early `return` can skip past.
-        """
+    async def attachments_for_message(self, message_id: str) -> list[dict[str, Any]]:
+        """What came attached to one message, oldest first."""
         async with self._serial:
             async with self._conn.execute(
                 "SELECT a.sha256, a.mime, a.bytes, a.width, a.height, r.name, r.created_at"
                 " FROM attachment_refs r JOIN attachments a ON a.sha256 = r.sha256"
-                " WHERE r.message_id = ? AND (r.scope = 'workspace' OR r.scope = ?)"
+                " WHERE r.message_id = ?"
                 " ORDER BY r.created_at, r.id",
-                (message_id, scope),
+                (message_id,),
             ) as cur:
                 rows = await cur.fetchall()
             return [dict(row) for row in rows]
@@ -938,38 +923,36 @@ class Store:
     async def pending_observations(self, limit: int = 100) -> list[dict[str, Any]]:
         """Candidate facts nobody has decided about yet, oldest first.
 
-        Ordered by `(scope, subject)` before age so that `promote`'s grouping
-        falls out of the read: the pair is what it reconciles in one call, and
-        two visibility scopes must never meet inside one. `created_at` breaks
-        the tie, so the limit still takes the oldest of whatever is waiting.
+        Ordered by `subject` before age so that `promote`'s grouping falls out
+        of the read: the subject is what it reconciles in one call. `created_at`
+        breaks the tie, so the limit still takes the oldest of whatever is
+        waiting.
         """
         async with (
             self._serial,
             self._conn.execute(
                 "SELECT * FROM observations WHERE state = 'pending'"
-                " ORDER BY scope, subject, created_at LIMIT ?",
+                " ORDER BY subject, created_at LIMIT ?",
                 (limit,),
             ) as cur,
         ):
             return [dict(row) for row in await cur.fetchall()]
 
-    async def episode_summaries(
-        self, *, since: str, until: str, scope: str = "workspace"
-    ) -> list[dict[str, Any]]:
-        """Closed episodes from one window and one audience, oldest first.
+    async def episode_summaries(self, *, since: str, until: str) -> list[dict[str, Any]]:
+        """Closed episodes from one window, oldest first.
 
-        Scoped, and the caller says to what. The one reader is the nightly
-        journal, which is a file in the repo: summarizing a DM into it would
-        put a private conversation somewhere the whole workspace can read.
+        Every conversation, wherever it happened. The one reader is the nightly
+        journal, and with one person on the other end of all of them there is
+        no audience the day's record has to be kept from (#265).
         """
         async with (
             self._serial,
             self._conn.execute(
                 "SELECT e.id, e.summary, e.signal_score, e.ended_at, s.scope FROM episodes e"
                 " JOIN sessions s ON s.id = e.session_id"
-                " WHERE e.state != 'open' AND e.summary IS NOT NULL AND s.scope = ?"
+                " WHERE e.state != 'open' AND e.summary IS NOT NULL"
                 " AND e.ended_at >= ? AND e.ended_at < ? ORDER BY e.ended_at",
-                (scope, since, until),
+                (since, until),
             ) as cur,
         ):
             return [dict(row) for row in await cur.fetchall()]

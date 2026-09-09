@@ -37,11 +37,12 @@ from siatt.imagen import ImageProvider, image_generate_tool
 from siatt.init import run_init
 from siatt.llm.tokens import default_tokenizer
 from siatt.memory.dates import local_zone
-from siatt.memory.document import Problem
+from siatt.memory.document import WORKSPACE, Problem
 from siatt.memory.explain import render_trace
 from siatt.memory.index import MemoryIndex
-from siatt.memory.ltm import MemoryStore, MemoryStoreError
+from siatt.memory.ltm import CommitMeta, MemoryStore, MemoryStoreError
 from siatt.memory.manifest import Manifest
+from siatt.memory.patch import PatchCompiler, Update
 from siatt.memory.retrieve import Retriever
 from siatt.redact import Redactor
 from siatt.runner.jobs import default_specs
@@ -321,13 +322,12 @@ def reindex(
 def why(
     question: Annotated[str, typer.Argument(help="The question to trace retrieval for.")],
     config: ConfigOption = None,
-    scope: Annotated[str, typer.Option(help="Answer as a session in this scope.")] = "workspace",
 ) -> None:
     """Show the full retrieval trace for a question.
 
     Every complaint about this system arrives as "why did it not remember X".
-    This is the answer: the query, every candidate and its scores, what scope
-    filtering removed, and what actually fitted in the budget.
+    This is the answer: the query, every candidate and its scores, and what
+    actually fitted in the budget.
     """
 
     async def main() -> None:
@@ -353,8 +353,6 @@ def why(
             try:
                 retrieval = await retriever.retrieve(
                     question,
-                    scope=scope,
-                    explain=True,
                     # The terminal has no Slack profile behind it, so the
                     # machine's own zone stands in. Without it a trace run at
                     # 08:00 in Seoul would explain a search for the wrong day
@@ -373,12 +371,70 @@ def why(
 
 
 @app.command()
+def rescope(config: ConfigOption = None) -> None:
+    """Rewrite every memory's `visibility` to `workspace`. One commit.
+
+    The corpus predates #265: files written while Siatt scoped memory per
+    channel still carry `channel:C0123` or `private:U0456`, and nothing reads
+    those any more. Left alone they are a field that says something untrue about
+    where a memory may be recalled, which is worse than a field that says
+    nothing.
+
+    Through the patch path like every other write, so it is one commit and
+    `git revert` puts it back. `updated` is not re-stamped -- normalizing a
+    field nothing reads is not a change to what a memory claims, and stamping
+    fifty files would make the whole corpus the newest thing in it.
+    """
+
+    async def main() -> None:
+        cfg = _load(config)
+        if not cfg.ltm.configured:
+            err.print("[red]error[/red]: no memory repo configured; run `siatt init`")
+            raise typer.Exit(1)
+        async with await Store.open(cfg.store.resolved()) as store:
+            memory = await MemoryStore.open(cfg, store)
+            manifest = memory.manifest()
+            stale = sorted(
+                memory_id
+                for memory_id, entry in manifest.memories.items()
+                if entry.visibility != WORKSPACE
+            )
+            if not stale:
+                console.print("every memory is already `workspace`")
+                return
+            plan = [
+                Update(id=memory_id, frontmatter={"visibility": WORKSPACE}) for memory_id in stale
+            ]
+            try:
+                changes = PatchCompiler(
+                    cfg.ltm.resolved_clone_path(), manifest, policy=cfg.memory
+                ).compile(plan, job="rescope")
+                result = await memory.apply(
+                    changes,
+                    CommitMeta(
+                        summary=f"chore(memory): one pool, {len(stale)} memory(s) rescoped",
+                        job="rescope",
+                        memory_ids=stale,
+                    ),
+                )
+            except (MemoryStoreError, SiattError) as exc:
+                err.print(f"[red]error[/red]: {exc}")
+                raise typer.Exit(1) from exc
+            await memory.refresh_manifest()
+        console.print(f"rescoped {len(stale)} memory(s)")
+        if result.sha:
+            console.print(f"[dim]{result.sha}[/dim]")
+
+    _run(main())
+
+
+@app.command()
 def audit(config: ConfigOption = None) -> None:
-    """List every long-term memory by visibility scope.
+    """List every long-term memory.
 
     The corpus is read directly instead of trusting the committed manifest: an
-    audit whose input can be stale is exactly where a newly added private file
-    could disappear from view.
+    audit whose input can be stale is exactly where a file added since the last
+    commit could disappear from view.
     """
     cfg = _load(config)
     if not cfg.ltm.configured:
@@ -741,8 +797,6 @@ def task_add(
     argument at all (§7.1) — what it can ask for is a new thread in the channel
     it is already in, which is not a destination.
 
-    A task with a destination fires under *that channel's* scope, not the
-    creator's: it can say what the channel may already see, and nothing else.
     """
 
     async def main() -> None:

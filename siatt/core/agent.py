@@ -124,13 +124,10 @@ class AgentResult:
     #: boosts and an ❌ marks suspect (#36), so it has to be what actually
     #: reached the model rather than what was ranked.
     memory_ids: list[str] = field(default_factory=list)
-    #: Files this turn asked to send back, resolved under the session's scope
-    #: after the loop ended. The rows rather than the digests: a surface about
-    #: to upload one needs the mime type and the name the file arrived under,
-    #: and re-reading them here is what keeps the scope check on the path that
-    #: produces the fact rather than on the surface that consumes it. Empty on
-    #: a surface that cannot send files, because the tool refused before it
-    #: resolved anything.
+    #: Files this turn asked to send back, resolved after the loop ended. The
+    #: rows rather than the digests: a surface about to upload one needs the
+    #: mime type and the name the file arrived under. Empty on a surface that
+    #: cannot send files, because the tool refused before it resolved anything.
     attachments: tuple[Attachment, ...] = ()
     #: Messages this turn asked to send before the one it ends with, in the
     #: order it named them (#259). `text` is the last message, not the only
@@ -322,7 +319,7 @@ class Agent:
             # Stored as references. The bytes are on disk and stay there; what
             # goes in the transcript is which file, so that re-reading this
             # conversation next week costs the same as it did today.
-            Message.user(user_text, images=await self._blocks(attachments, scope)),
+            Message.user(user_text, images=await self._blocks(attachments)),
             author=author,
             external_id=external_id,
         )
@@ -377,8 +374,8 @@ class Agent:
             # every tool call would pay for it on each pass and thrash the
             # cacheable prefix for material that has not changed.
             if iteration == 1:
-                pinned, retrieved, recalled = await self._recall(user_text, history, scope, tz)
-            history = await self._hydrate(history, scope)
+                pinned, retrieved, recalled = await self._recall(user_text, history, tz)
+            history = await self._hydrate(history)
             tools = self._tools.defs()
             packed = self._packer.pack(
                 image_policies=tuple(
@@ -450,7 +447,7 @@ class Agent:
             shown = len(context.surfaced)
             await self._store.append_message(
                 session_id,
-                Message.tool_results(results, images=await self._blocks(surfaced, scope)),
+                Message.tool_results(results, images=await self._blocks(surfaced)),
             )
 
         return AgentResult(
@@ -463,14 +460,14 @@ class Agent:
             # Tool calls append to the context as the turn runs, so this is
             # read at the end rather than built alongside `recalled`.
             memory_ids=list(dict.fromkeys([*recalled, *context.recalled])),
-            attachments=await self._outgoing(context.outgoing, scope),
+            attachments=await self._outgoing(context.outgoing),
             parts=tuple(context.parts),
             credential_scrubbed=credential_scrubbed,
         )
 
     # -- internals -----------------------------------------------------------
 
-    async def _blocks(self, shas: Sequence[str], scope: str) -> list[ImageBlock]:
+    async def _blocks(self, shas: Sequence[str]) -> list[ImageBlock]:
         """The images that came with this message, as blocks to store.
 
         Hashes in, blocks out: the surface knows what it stored and nothing
@@ -486,7 +483,7 @@ class Agent:
             return []
         blocks = []
         for sha in shas:
-            held = await self._attachments.get(sha, scope=scope)
+            held = await self._attachments.get(sha)
             if held is not None and held.is_image:
                 blocks.append(
                     ImageBlock(
@@ -498,7 +495,7 @@ class Agent:
                 )
         return blocks
 
-    async def _outgoing(self, shas: Sequence[str], scope: str) -> tuple[Attachment, ...]:
+    async def _outgoing(self, shas: Sequence[str]) -> tuple[Attachment, ...]:
         """The files this turn asked to send, as rows rather than as digests.
 
         Resolved here, at the end, for the reason `_blocks` resolves its own:
@@ -517,14 +514,14 @@ class Agent:
             return ()
         held = []
         for sha in shas:
-            found = await self._attachments.get(sha, scope=scope)
+            found = await self._attachments.get(sha)
             if found is None:
-                log.warning("could not send attachment %s: not visible from %s", sha[:12], scope)
+                log.warning("could not send attachment %s: it is not in the store", sha[:12])
                 continue
             held.append(found)
         return tuple(held)
 
-    async def _hydrate(self, history: list[Message], scope: str) -> list[Message]:
+    async def _hydrate(self, history: list[Message]) -> list[Message]:
         """Put the bytes back into the image blocks about to be sent.
 
         Here rather than in the provider: `siatt/llm/types.py` exists so that no
@@ -532,10 +529,6 @@ class Agent:
         client a blob store would push storage the other way through the same
         wall. The packer stays free of it too — it counts an image by its
         dimensions, which are on the block already.
-
-        Scoped, like every other read of an attachment. The session's scope is
-        the one the turn is running under, so a blob that arrived somewhere
-        narrower is not resurrected here by a message that quotes it.
 
         A blob that will not load is not a failed turn: the block keeps its
         `data is None` and the compat layer says so in words. That is the same
@@ -548,15 +541,15 @@ class Agent:
             if not message.images:
                 filled.append(message)
                 continue
-            content = [await self._with_data(b, scope) for b in message.content]
+            content = [await self._with_data(b) for b in message.content]
             filled.append(message.model_copy(update={"content": tuple(content)}))
         return filled
 
-    async def _with_data(self, block: ContentBlock, scope: str) -> ContentBlock:
+    async def _with_data(self, block: ContentBlock) -> ContentBlock:
         if not isinstance(block, ImageBlock) or self._attachments is None:
             return block
         try:
-            data = await self._attachments.read(block.sha256, scope=scope)
+            data = await self._attachments.read(block.sha256)
         except AttachmentError:
             log.warning("could not read attachment %s for this turn", block.sha256[:12])
             return block
@@ -630,7 +623,6 @@ class Agent:
         self,
         user_text: str,
         history: Sequence[Message],
-        scope: str,
         tz: str | tzinfo | None = None,
     ) -> tuple[list[str], list[str], list[str]]:
         """Pre-inject what the question is likely to need.
@@ -643,7 +635,7 @@ class Agent:
             return [], [], []
         try:
             recall = await self._retriever.retrieve(
-                user_text, scope=scope, recent=[m.text for m in history[-4:] if m.text], tz=tz
+                user_text, recent=[m.text for m in history[-4:] if m.text], tz=tz
             )
         except Exception:
             log.exception("retrieval failed; answering without memory")

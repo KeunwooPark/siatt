@@ -28,7 +28,6 @@ from siatt.memory.retrieve import (
     _long_enough,
     build_match,
     is_self_contained,
-    permits,
     render_snippet,
 )
 from siatt.redact import Redactor
@@ -627,106 +626,61 @@ def test_a_two_character_cjk_noun_survives_the_recent_turn_floor() -> None:
     assert _long_enough("name", 3)
 
 
-# -- scope: the filter that must never be forgotten --------------------------
+# -- one pool (#265) ---------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("requester", "memory", "allowed"),
-    [
-        ("workspace", "workspace", True),
-        ("channel:C1", "workspace", True),
-        ("private:U1", "workspace", True),
-        ("workspace", "channel:C1", False),
-        ("workspace", "private:U1", False),
-        ("channel:C1", "channel:C1", True),
-        ("channel:C1", "channel:C2", False),
-        ("private:U1", "private:U2", False),
-        ("channel:C1", "private:U1", False),
-    ],
-)
-def test_scope_visibility_rules(requester: str, memory: str, allowed: bool) -> None:
-    assert permits(requester, memory) is allowed
-
-
-async def test_a_private_memory_never_reaches_a_public_scope(
+async def test_a_memory_written_under_a_narrow_scope_is_still_retrieved(
     tmp_path: Path, store: Store, tokenizer: Tokenizer
 ) -> None:
-    """The number-one failure mode of a shared-memory bot, guarded directly."""
+    """The corpus predates #265 and still holds `private:` and `channel:` files.
+
+    Nothing filters on them any more, and a memory the user cannot reach is the
+    bug this replaced: a preference stated in one channel was invisible from the
+    next, and the turn that could not see it answered "nothing is stored".
+    """
     bootstrap(tmp_path)
-    secret = write(
+    old = write(
         tmp_path,
         MemoryDoc.new(
             type="fact",
-            title="Salary negotiation",
-            body="They asked for a raise to 180k.",
+            title="Poster icon style",
+            body="The poster icons are a realistic miniature.",
             visibility="private:U01",
         ),
     )
     await MemoryIndex(store, tmp_path).reindex()
 
-    retrieval = await retriever(store, tokenizer).retrieve("salary raise", scope="workspace")
+    retrieval = await retriever(store, tokenizer).retrieve("poster icon style")
 
-    assert secret.id not in retrieval.memory_ids
-    assert all(secret.id not in s for s in retrieval.snippets)
+    assert old.id in retrieval.memory_ids
+    assert any(old.id in s for s in retrieval.snippets)
 
 
-async def test_the_owner_of_a_private_memory_still_sees_it(
+async def test_two_channels_are_one_pool(
     tmp_path: Path, store: Store, tokenizer: Tokenizer
 ) -> None:
+    """One person talking in two places, and one memory of both."""
     bootstrap(tmp_path)
-    secret = write(
+    here = write(
         tmp_path,
         MemoryDoc.new(
-            type="fact", title="Salary negotiation", body="Raise to 180k.", visibility="private:U01"
+            type="fact", title="Diary poster", body="Poster is 4:5.", visibility="channel:C1"
+        ),
+    )
+    there = write(
+        tmp_path,
+        MemoryDoc.new(
+            type="fact",
+            title="Poster paper",
+            body="Poster paper is white.",
+            visibility="channel:C2",
         ),
     )
     await MemoryIndex(store, tmp_path).reindex()
 
-    retrieval = await retriever(store, tokenizer).retrieve("salary raise", scope="private:U01")
-    assert secret.id in retrieval.memory_ids
+    found = (await retriever(store, tokenizer).retrieve("poster")).memory_ids
 
-
-async def test_scope_filtering_happens_before_ranking(
-    tmp_path: Path, store: Store, tokenizer: Tokenizer
-) -> None:
-    """A denied memory must not appear in the candidate pool at all."""
-    bootstrap(tmp_path)
-    write(
-        tmp_path,
-        MemoryDoc.new(
-            type="fact", title="Private deploys", body="Deploy secret.", visibility="private:U01"
-        ),
-    )
-    await MemoryIndex(store, tmp_path).reindex()
-
-    retrieval = await retriever(store, tokenizer).retrieve("deploy", scope="workspace")
-
-    assert retrieval.trace is not None
-    assert retrieval.trace.candidates == [], "it never entered ranking, not just packing"
-
-
-async def test_explain_reports_what_scope_removed_without_packing_it(
-    tmp_path: Path, store: Store, tokenizer: Tokenizer
-) -> None:
-    bootstrap(tmp_path)
-    secret = write(
-        tmp_path,
-        MemoryDoc.new(
-            type="fact", title="Private deploys", body="Deploy secret.", visibility="private:U01"
-        ),
-    )
-    await MemoryIndex(store, tmp_path).reindex()
-
-    retrieval = await retriever(store, tokenizer).retrieve(
-        "deploy", scope="workspace", explain=True
-    )
-
-    assert retrieval.trace is not None
-    # Chunk-level: a trace that collapsed to one row per memory would hide which
-    # part of the file matched, which is usually the thing you are debugging.
-    assert {c.memory_id for c in retrieval.trace.denied} == {secret.id}
-    assert retrieval.snippets == [], "explained, not injected"
-    assert "not visible from" in render_trace(retrieval)
+    assert {here.id, there.id} <= set(found)
 
 
 # -- scoring and packing -----------------------------------------------------
@@ -967,14 +921,11 @@ async def test_an_empty_index_retrieves_nothing_without_erroring(
 async def test_the_trace_explains_the_whole_pipeline(
     corpus: dict[str, str], store: Store, tokenizer: Tokenizer
 ) -> None:
-    retrieval = await retriever(store, tokenizer).retrieve(
-        "Who owns the deploy pipeline?", explain=True
-    )
+    retrieval = await retriever(store, tokenizer).retrieve("Who owns the deploy pipeline?")
     rendered = render_trace(retrieval)
 
     assert "QUERY" in rendered
     assert "CANDIDATES" in rendered
-    assert "SCOPE FILTER" in rendered
     assert "PACKED" in rendered
     assert corpus["Jane Okafor"] in rendered
     assert "final" in rendered and "recency" in rendered
@@ -993,7 +944,7 @@ async def test_a_question_that_finds_nothing_says_so(
     corpus: dict[str, str], store: Store, tokenizer: Tokenizer
 ) -> None:
     rendered = render_trace(
-        await retriever(store, tokenizer).retrieve("zygomorphic quinquagenarian", explain=True)
+        await retriever(store, tokenizer).retrieve("zygomorphic quinquagenarian")
     )
     assert "none matched" in rendered
     assert "nothing was injected" in rendered
@@ -1056,7 +1007,7 @@ async def test_a_credential_in_memory_never_reaches_the_prompt(
 ) -> None:
     """#67. The injection path is the default path, and it was the unscrubbed one."""
     retrieval = await retriever(store, tokenizer, scrub=Redactor().scrub).retrieve(
-        "how does the staging runner authenticate", explain=True
+        "how does the staging runner authenticate"
     )
 
     assert retrieval.memory_ids == [leaky], "the memory has to actually be found"
@@ -1076,7 +1027,7 @@ async def test_every_view_of_a_candidate_is_scrubbed_not_just_the_snippet(
     bug, one funnel short.
     """
     retrieval = await retriever(store, tokenizer, scrub=Redactor().scrub).retrieve(
-        "staging runner deploy key", explain=True
+        "staging runner deploy key"
     )
     assert retrieval.trace is not None
 
@@ -1122,37 +1073,6 @@ async def test_a_retriever_with_no_scrubber_is_unchanged(
     and every caller that builds a prompt passes one."""
     retrieval = await retriever(store, tokenizer).retrieve("staging runner deploy key")
     assert "AKIAIOSFODNN7EXAMPLE" in "\n".join(retrieval.snippets)
-
-
-async def test_the_scope_block_names_each_memory_once(
-    tmp_path: Path, store: Store, tokenizer: Tokenizer
-) -> None:
-    """#70. A header chunk and a body chunk are two rows in the trace and one
-    fact on the page: the document's scope. Printed per chunk they came out as
-    the same sentence twice, with nothing to tell the two lines apart."""
-    bootstrap(tmp_path)
-    secret = write(
-        tmp_path,
-        MemoryDoc.new(
-            type="topic",
-            title="Deploy incident",
-            body="Deploy went wrong.\n\n## After\n\nThe deploy rota was paged.",
-            visibility="private:U01",
-        ),
-    )
-    await MemoryIndex(store, tmp_path).reindex()
-
-    retrieval = await retriever(store, tokenizer).retrieve(
-        "deploy", scope="workspace", explain=True
-    )
-    assert retrieval.trace is not None
-    assert len(retrieval.trace.denied) > 1, "more than one chunk of one memory was excluded"
-
-    block = render_trace(retrieval).partition("SCOPE FILTER")[2].partition("PACKED")[0]
-    named = [line for line in block.splitlines() if secret.id in line]
-    assert len(named) == 1, f"one line per memory, got:\n{block}"
-    assert f"({len(retrieval.trace.denied)} chunks)" in named[0]
-    assert f"{len(retrieval.trace.denied)} chunk(s) never entered" in block
 
 
 # -- pinned memories keep their own allowance (#75) ---------------------------

@@ -6,10 +6,8 @@ question, or asks a second question the first retrieval did not anticipate.
 These three tools are the tail, and shipping both is the point: injection covers
 the ninety percent, tools cover the rest.
 
-Two constraints shape all of them:
+One constraint shapes all of them:
 
-- **Scope comes from the session, never from the model.** A tool argument that
-  could widen visibility would make every other scope check decorative.
 - **`memory_write` does not write.** It appends an observation, and the
   `promote` job turns observations into a validated patch plan. The interactive
   path and the background path therefore share one write path — the one that
@@ -27,7 +25,7 @@ from siatt.memory import blobref
 from siatt.memory.document import MemoryDoc, MemoryError_, is_memory_id
 from siatt.memory.ltm import MemoryStore, MemoryStoreError
 from siatt.memory.observation import OBSERVATION_KINDS, Cited, citable
-from siatt.memory.retrieve import Retriever, permits, render_snippet
+from siatt.memory.retrieve import Retriever, render_snippet
 from siatt.memory.subject import normalize_subject
 from siatt.store import Store
 from siatt.store.blobs import Attachment, Attachments
@@ -80,16 +78,6 @@ def _search_tool(retriever: Retriever) -> Tool:
         query = str(args["query"]).strip()
         limit = min(int(args.get("limit", 5)), MAX_SEARCH_LIMIT)
 
-        scope = context.scope
-        if hint := args.get("scope_hint"):
-            # A hint may narrow the search, never widen it. Asking to search a
-            # scope this session cannot see is refused rather than downgraded,
-            # so the model is told what happened instead of quietly getting
-            # results from somewhere else.
-            if not permits(context.scope, str(hint)):
-                return f"This conversation cannot search the scope {hint!r}."
-            scope = str(hint)
-
         # Pinned memories are excluded from the pool and the results are read
         # in rank order. Both matter here and nowhere else: an explicit search
         # asked for what matches, and every pinned memory is already in the
@@ -103,7 +91,6 @@ def _search_tool(retriever: Retriever) -> Tool:
         # twenty was answered with eight and no indication of it (#61).
         retrieval = await retriever.retrieve(
             query,
-            scope=scope,
             include_pinned=False,
             limit=limit,
             # The same zone the pre-injected recall used. A model that searches
@@ -134,14 +121,6 @@ def _search_tool(retriever: Retriever) -> Tool:
                 "query": {
                     "type": "string",
                     "description": "What to look for, in words likely to appear in the memory.",
-                },
-                "scope_hint": {
-                    "type": "string",
-                    "description": (
-                        "Optional visibility scope to restrict the search to, e.g. "
-                        "'channel:C0123'. Can only narrow what this conversation "
-                        "may already see."
-                    ),
                 },
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_SEARCH_LIMIT},
             },
@@ -182,7 +161,7 @@ async def _attachment_note(body: str, attachments: Attachments | None, context: 
         return ""
     lines = []
     for sha in wanted:
-        held = await attachments.get(sha, scope=context.scope)
+        held = await attachments.get(sha)
         if held is None:
             lines.append(f"- {blobref.handle(sha)}… — no longer stored")
             continue
@@ -229,21 +208,12 @@ def _read_tool(memory: MemoryStore, attachments: Attachments | None = None) -> T
         if entry is None:
             return f"No memory with id {memory_id}."
 
-        # The scope check happens on the document, not the manifest entry: the
-        # entry is a copy, and a copy is a thing that can go stale.
         try:
             raw = memory.read(entry.path)
             doc = MemoryDoc.parse(raw, source=entry.path)
         except (MemoryStoreError, MemoryError_) as exc:
             return f"Could not read {entry.path}: {exc}"
 
-        if not permits(context.scope, doc.frontmatter.visibility):
-            log.info("refused a cross-scope memory_read of %s", memory_id)
-            return f"No memory with id {memory_id}."
-
-        # After the scope check, never before it: a memory this conversation
-        # may not see did not contribute to its answer, and recording it here
-        # would put its id in front of whoever reads the feedback.
         context.recalled.append(memory_id)
         return raw + await _attachment_note(doc.body, attachments, context)
 
@@ -280,20 +250,19 @@ class _Unresolved(Exception):
 async def _cited(store: Store, handles: Sequence[str], context: ToolContext) -> list[Cited]:
     """The attachments these handles name, or an explanation of why they name none.
 
-    Resolved against this conversation, scoped in the query. That is the whole
-    permission model here and it is deliberately narrow: the model can cite a
-    file somebody sent *where it is being asked*, and a digest copied from
-    anywhere else — an older thread, a memory it read a moment ago, its own
-    invention — resolves to nothing. Widening it to every attachment the scope
-    can see would make "remember this photo" a way to attach any picture in the
-    workspace to any claim.
+    Resolved against this conversation, and deliberately narrow: the model can
+    cite a file somebody sent *where it is being asked*, and a digest copied
+    from anywhere else — an older thread, a memory it read a moment ago, its own
+    invention — resolves to nothing. Widening it to every attachment in the
+    store would make "remember this photo" a way to attach any picture to any
+    claim.
 
     The name comes from the row, never from the model. What a memory's link text
     says is what the surface called the file.
     """
     if not handles:
         return []
-    rows = await store.attachments_for_session(context.session_id, scope=context.scope)
+    rows = await store.attachments_for_session(context.session_id)
     known = citable(rows)
     if not known:
         raise _Unresolved(

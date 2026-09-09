@@ -1,10 +1,9 @@
 """Deciding what a Slack event means, with nothing else in the way.
 
 No `slack_bolt` import, no network, no database of its own. Every judgement
-that decides whether a message is for Siatt and what it may be remembered under
-lives in this module, because those are the judgements that leak a private
-conversation when they are wrong — and they should be testable without a
-socket.
+that decides whether a message is for Siatt lives in this module, because a
+judgement that answers the wrong message — or stays silent on the right one —
+should be testable without a socket.
 """
 
 from __future__ import annotations
@@ -194,7 +193,9 @@ async def normalize(
             session_id=session,
             text=_strip_mention(text, context.bot_user_id),
             attachments=_attached(event),
-            scope=scope_for(channel, author, is_dm=is_dm),
+            # `scope` is left at its default. Siatt serves one person, so a DM
+            # and a channel are the same person talking in two places and there
+            # is no second audience for a narrower one to protect (#265).
             author=author,
             channel=channel,
             # Always in-thread, and a top-level message starts one. Answering a
@@ -318,17 +319,6 @@ def _revision(event: dict[str, Any], subtype: str, context: SlackContext) -> Dec
     # put a second note on a message that has one.
     text = _strip_mention(str(inner.get("text") or ""), context.bot_user_id)
     return Changed(Revision(external_id=message_id(context.team_id, channel, ts), text=text))
-
-
-def scope_for(channel: str, author: str, *, is_dm: bool) -> str:
-    """What a session here is allowed to have remembered about it.
-
-    A DM belongs to the person in it; anything else belongs to its channel.
-    Nothing from Slack is `workspace` — that is the widest scope there is, and
-    widening one is a decision for #24 with a person in the loop, not a default
-    that every public channel picks up on the way in.
-    """
-    return f"private:{author}" if is_dm else f"channel:{channel}"
 
 
 def _attached(event: dict[str, Any]) -> tuple[Attached, ...]:
