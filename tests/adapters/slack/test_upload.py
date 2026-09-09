@@ -1,9 +1,8 @@
-"""Sending a file out: the scope check, and what happens when Slack says no.
+"""Sending a file out, and what happens when Slack says no.
 
 The inbound half's hazard is a bearer token following a URL somewhere it should
-not go. This half's is quieter — bytes leaving the conversation they belong to —
-and it has exactly one guard, which is that everything is read through
-`Attachments.read` under the scope the turn ran under.
+not go. This half is about delivery: sent once across restarts, the answer
+first, and a line in the thread when a file does not go.
 """
 
 from __future__ import annotations
@@ -52,17 +51,15 @@ class FakePoster:
         return "1700000000.000200"
 
 
-async def conversation(store: Store, *, scope: str = "channel:C1") -> None:
-    await store.ensure_session("s1", surface="slack", scope=scope)
+async def conversation(store: Store) -> None:
+    await store.ensure_session("s1", surface="slack", scope="workspace")
 
 
-async def kept(
-    attachments: Attachments, *, scope: str = "channel:C1", name: str | None = "shot.png"
-) -> Attachment:
+async def kept(attachments: Attachments, *, name: str | None = "shot.png") -> Attachment:
     sha = await attachments.put(
-        png(), mime="image/png", source_name="slack", scope=scope, session_id="s1", name=name
+        png(), mime="image/png", source_name="slack", scope="workspace", session_id="s1", name=name
     )
-    held = await attachments.get(sha, scope=scope)
+    held = await attachments.get(sha)
     assert held is not None
     return held
 
@@ -88,7 +85,6 @@ async def send(
 ) -> None:
     await sending.send(
         AgentResult(text="here it is", attachments=tuple(held)),
-        session_id="s1",
         external_id=external_id,
         channel="C1",
         thread_ts="1700000000.000100",
@@ -168,34 +164,25 @@ async def test_a_filename_is_flattened_before_it_is_sent(store: Store, tmp_path:
     assert "/" not in name
 
 
-# -- the scope ---------------------------------------------------------------
+# -- a file that is no longer there ------------------------------------------
 
 
-async def test_a_photograph_from_a_dm_is_not_uploaded_into_a_channel(
+async def test_a_blob_the_collector_took_says_so_instead_of_being_sent(
     store: Store, tmp_path: Path
 ) -> None:
-    """The one check. The blob is real, the digest is right, and the session is
-    somewhere else — so there are no bytes to send."""
-    await conversation(store, scope="channel:C1")
+    """The row is what says these bytes are the store's. Without one there is
+    nothing to upload, and the thread is told rather than left to assume."""
+    await conversation(store)
     attachments = files(store, tmp_path)
-    private = await kept(attachments, scope="private:U123", name="dm.png")
+    held = await kept(attachments, name="gone.png")
+    await store.raw("DELETE FROM attachment_refs")
+    await store.raw("DELETE FROM attachments")
     sending, uploader, poster = uploads(store, attachments)
-
-    await send(sending, private)
-
-    assert uploader.calls == []
-    assert "dm.png" in poster.posted[0]["text"]
-
-
-async def test_the_session_scope_is_what_is_read_under(store: Store, tmp_path: Path) -> None:
-    await conversation(store, scope="private:U123")
-    attachments = files(store, tmp_path)
-    held = await kept(attachments, scope="private:U123", name="dm.png")
-    sending, uploader, _ = uploads(store, attachments)
 
     await send(sending, held)
 
-    assert [call["filename"] for call in uploader.calls] == ["dm.png"]
+    assert uploader.calls == []
+    assert "gone.png" in poster.posted[0]["text"]
 
 
 # -- when it fails -----------------------------------------------------------
@@ -320,7 +307,7 @@ async def test_what_was_sent_is_recorded_as_an_arrival(store: Store, tmp_path: P
         "SELECT source, scope, name FROM attachment_refs WHERE source = ?", (SOURCE,)
     )
     assert [dict(row) for row in rows] == [
-        {"source": SOURCE, "scope": "channel:C1", "name": "shot.png"}
+        {"source": SOURCE, "scope": "workspace", "name": "shot.png"}
     ]
 
 

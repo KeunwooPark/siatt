@@ -134,34 +134,20 @@ async def test_search_says_so_when_nothing_matches(memory: Memory) -> None:
     assert "No memories matched" in result
 
 
-async def test_search_respects_the_session_scope(memory: Memory) -> None:
-    """A DM-scoped memory must not surface in a workspace conversation."""
-    secret = id_of(memory, "memory/facts/salary-review-outcome.md")
+async def test_search_finds_a_memory_written_under_any_scope(memory: Memory) -> None:
+    """One person, one pool. The corpus still holds files written when Siatt
+    scoped memory per channel, and nothing filters on that any more (#265)."""
+    old = id_of(memory, "memory/facts/salary-review-outcome.md")
 
-    public = await memory.call("memory_search", {"query": "salary band"})
-    assert secret not in public
-
-    private = await memory.call("memory_search", {"query": "salary band"}, scope="private:U01")
-    assert secret in private
+    assert old in await memory.call("memory_search", {"query": "salary band"})
 
 
-async def test_a_scope_hint_cannot_widen_access(memory: Memory) -> None:
-    """The one argument a model could use to escape its own scope."""
-    result = await memory.call(
-        "memory_search", {"query": "salary band", "scope_hint": "private:U01"}
-    )
+async def test_the_model_cannot_ask_for_a_scope_at_all(memory: Memory) -> None:
+    """The argument is gone from the schema, so a plan to use one is rejected
+    before the handler sees it."""
+    search = next(t for t in memory.registry.defs() if t.name == "memory_search")
 
-    assert id_of(memory, "memory/facts/salary-review-outcome.md") not in result
-    assert "cannot search the scope" in result
-
-
-async def test_a_scope_hint_may_narrow(memory: Memory) -> None:
-    result = await memory.call(
-        "memory_search",
-        {"query": "salary band", "scope_hint": "private:U01"},
-        scope="private:U01",
-    )
-    assert id_of(memory, "memory/facts/salary-review-outcome.md") in result
+    assert "scope_hint" not in search.input_schema["properties"]
 
 
 async def test_the_search_limit_is_capped(memory: Memory) -> None:
@@ -273,21 +259,13 @@ async def test_read_returns_the_whole_file(memory: Memory) -> None:
     assert "reviews every change" in result
 
 
-async def test_reading_a_private_memory_from_a_public_scope_is_refused(memory: Memory) -> None:
-    """And refused the same way a missing one is, so the id itself leaks nothing."""
-    secret = id_of(memory, "memory/facts/salary-review-outcome.md")
-
-    refused = await memory.call("memory_read", {"memory_id": secret})
-    missing = await memory.call("memory_read", {"memory_id": new_memory_id()})
-
-    assert "band 5" not in refused
-    assert refused.split()[:-1] == missing.split()[:-1], "indistinguishable but for the id"
+async def test_a_memory_written_under_any_scope_can_be_read(memory: Memory) -> None:
+    old = id_of(memory, "memory/facts/salary-review-outcome.md")
+    assert "band 5" in await memory.call("memory_read", {"memory_id": old})
 
 
-async def test_reading_a_private_memory_from_its_own_scope_works(memory: Memory) -> None:
-    secret = id_of(memory, "memory/facts/salary-review-outcome.md")
-    result = await memory.call("memory_read", {"memory_id": secret}, scope="private:U01")
-    assert "band 5" in result
+async def test_reading_a_memory_that_is_not_there_says_so(memory: Memory) -> None:
+    assert "No memory with id" in await memory.call("memory_read", {"memory_id": new_memory_id()})
 
 
 @pytest.mark.parametrize(
@@ -457,19 +435,21 @@ async def test_a_collected_attachment_stays_a_sentence(memory: Memory) -> None:
     assert context.surfaced == []
 
 
-async def test_an_attachment_out_of_scope_is_not_shown(memory: Memory) -> None:
-    """A memory this conversation may read can cite a blob it may not. The
-    honest answer is the one a collected blob gets."""
-    private = await sent(memory, scope="private:U01")
-    memory_id = citing(memory, private)
+async def test_an_attachment_a_memory_cites_is_shown_whatever_it_arrived_under(
+    memory: Memory,
+) -> None:
+    """One pool: a blob that arrived in one conversation is the same person's
+    blob in the next, and a memory citing it can put it in front of the model."""
+    old = await sent(memory, scope="private:U01")
+    memory_id = citing(memory, old)
 
     result = await memory.registry.dispatch(
         ToolUseBlock(id="t1", name="memory_read", input={"memory_id": memory_id}),
         context := ToolContext(session_id="cli:1"),
     )
 
-    assert "no longer stored" in result.content
-    assert context.surfaced == []
+    assert "no longer stored" not in result.content
+    assert context.surfaced == [old]
 
 
 async def test_a_video_is_named_and_never_shown(memory: Memory) -> None:
@@ -633,14 +613,15 @@ async def test_a_file_from_another_conversation_cannot_be_cited(memory: Memory) 
     assert await memory.store.pending_observations() == []
 
 
-async def test_a_handle_cannot_reach_across_the_scope_line(memory: Memory) -> None:
-    """Same session id, narrower arrival. The scope check is in the query that
-    resolves the handle, so there is no answer to be had here at all."""
-    private = await sent(memory, scope="private:U01")
+async def test_a_handle_cannot_reach_out_of_this_conversation(memory: Memory) -> None:
+    """The line is the session, not the scope: a model may cite a file somebody
+    sent where it is being asked, and a digest from anywhere else resolves to
+    nothing."""
+    elsewhere = await sent(memory, session_id="cli:99")
 
     result = await memory.call(
         "memory_write",
-        {"kind": "fact", "subject": "X", "claim": "Y", "attachments": [handle(private)]},
+        {"kind": "fact", "subject": "X", "claim": "Y", "attachments": [handle(elsewhere)]},
         session_id="cli:1",
     )
 
@@ -770,17 +751,16 @@ async def test_the_transcript_keeps_the_reference_and_not_the_bytes(
     assert "data" not in stored_content
 
 
-async def test_a_picture_out_of_scope_never_reaches_the_provider(
+async def test_a_picture_a_memory_cites_reaches_the_provider(
     memory: Memory, store: Store, tokenizer: Tokenizer
 ) -> None:
-    """Two checks, and both have to hold: the note refuses to surface it, and
-    hydration would refuse to load it."""
-    private = await sent(memory, scope="private:U01")
-    provider = Reading(citing(memory, private))
+    """Both halves have to hold: the note surfaces it, and hydration loads it."""
+    old = await sent(memory, scope="private:U01")
+    provider = Reading(citing(memory, old))
 
     await reading_agent(memory, store, tokenizer, provider).respond("cli:1", "what did we draw?")
 
-    assert provider.requests[1].messages[-1].images == ()
+    assert [b.sha256 for b in provider.requests[1].messages[-1].images] == [old]
 
 
 # -- acceptance: the agent recovers from a pre-injection miss ----------------
@@ -897,7 +877,7 @@ async def test_a_broken_retriever_degrades_the_turn_rather_than_ending_it(
     assert result.text == "I don't know."
 
 
-async def test_pre_injection_respects_the_session_scope(
+async def test_pre_injection_reaches_a_memory_written_under_any_scope(
     memory: Memory, store: Store, tokenizer: Tokenizer
 ) -> None:
     provider = Scripted()
@@ -912,7 +892,7 @@ async def test_pre_injection_respects_the_session_scope(
 
     await agent.respond("cli:4", "what was the salary band outcome?")
     injected = provider.contexts[0] or ""
-    assert id_of(memory, "memory/facts/salary-review-outcome.md") not in injected
+    assert id_of(memory, "memory/facts/salary-review-outcome.md") in injected
 
 
 # -- a write tool must not confirm a no-op (#79) ------------------------------

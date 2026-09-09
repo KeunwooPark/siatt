@@ -71,7 +71,7 @@ DEFAULT_IMAGE_MODEL = "openai/gpt-image-2"
 #: the task was created in, posted at top level so every firing starts its own
 #: thread. Reserved, so `[tasks.destinations]` cannot define a name that means
 #: something else — and it is the only destination a tool may set, because it
-#: reaches exactly the conversation the task already belongs to (§11.1).
+#: reaches exactly the conversation the task already belongs to (§7.1).
 HERE = "here"
 
 #: What `siatt task add --destination` takes, and therefore what a key in

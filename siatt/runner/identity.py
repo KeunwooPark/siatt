@@ -57,13 +57,9 @@ _BLOCK = re.compile(re.escape(OPEN) + r".*?" + re.escape(CLOSE), re.DOTALL)
 #: hundred people at once should produce five commits rather than five refusals.
 DEFAULT_LIMIT = 20
 
-#: A directory entry is not a conversation, and this is the one place in the
-#: Slack surface where `workspace` is the right scope (`docs/DESIGN.md` §10.1
-#: says nothing from Slack is workspace-scoped, and means what conversations
-#: put into memory). What is written here is `users.info` — the name already on
-#: every message this person has ever posted, visible to the whole workspace.
-#: Scoping it `private:<uid>` instead would hide Jane's own name from a channel
-#: conversation about Jane, which would defeat the point of mapping her at all.
+#: What every memory this job writes is stamped with. One value, since Siatt
+#: keeps one pool of memory for one person (§11.1) — kept as a name because
+#: this is a document-writing job and the field is part of the document.
 VISIBILITY = "workspace"
 
 

@@ -1,7 +1,7 @@
 """What Slack sends, and what Siatt decides it means.
 
-No `slack_bolt` here on purpose: every judgement that can leak a private
-conversation is in `events.py`, and none of it needs a socket to test.
+No `slack_bolt` here on purpose: every judgement about which messages are for
+Siatt is in `events.py`, and none of it needs a socket to test.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from siatt.adapters.slack.events import (
     SlackContext,
     normalize,
     reaction,
-    scope_for,
 )
 from siatt.config import SlackSettings
 
@@ -93,21 +92,19 @@ def accepted(decision: Decision) -> Accepted:
 # -- what gets through -------------------------------------------------------
 
 
-async def test_a_dm_is_answered_and_scoped_to_the_person() -> None:
+async def test_a_dm_is_answered() -> None:
     decision = await normalize(dm(), context=context(), known_session=never)
 
     event = accepted(decision).event
     assert event.session_id == f"slack:{TEAM}:D1:1700000000.000100"
-    assert event.scope == f"private:{HUMAN}"
     assert event.author == HUMAN
     assert event.text == "what did we decide?"
 
 
-async def test_a_mention_in_a_channel_is_answered_and_scoped_to_the_channel() -> None:
+async def test_a_mention_in_a_channel_is_answered() -> None:
     decision = await normalize(in_channel(), context=context(), known_session=never)
 
     event = accepted(decision).event
-    assert event.scope == "channel:C1"
     assert event.text == "what did we decide?", "Siatt's own mention is addressing, not content"
 
 
@@ -122,8 +119,7 @@ async def test_an_app_mention_carries_no_channel_type_and_is_still_a_channel() -
         "ts": "1700000000.000100",
     }
 
-    event = accepted(await normalize(body, context=context(), known_session=never)).event
-    assert event.scope == "channel:C1"
+    accepted(await normalize(body, context=context(), known_session=never))
 
 
 async def test_a_thread_reply_needs_no_second_mention() -> None:
@@ -201,7 +197,6 @@ async def test_the_reply_continues_the_turn_that_posted_rather_than_a_new_one() 
 
     assert event.session_id != f"slack:{TEAM}:C1:1700000000.000100"
     assert event.reply_to == "1700000000.000100", "and the answer goes back into that thread"
-    assert event.scope == "channel:C1", "under the channel's scope, like anything else said here"
 
 
 async def test_a_thread_siatt_did_not_start_is_still_ignored() -> None:
@@ -449,37 +444,17 @@ async def test_both_deliveries_of_one_message_normalize_identically() -> None:
         assert as_message == as_app_mention, body
 
 
-async def test_a_dm_is_private_however_slack_delivered_it() -> None:
+async def test_the_allowlist_does_not_govern_a_dm_however_slack_delivered_it() -> None:
     """`app_mention` carries no `channel_type`, so reading `is_dm` off it filed
-    a private conversation under `channel:` — the leak class this module exists
-    to contain. The channel id says what kind of conversation it is."""
-    body = as_mention(dm(f"<@{BOT}> what did we decide?"))
-
-    event = accepted(await normalize(body, context=context(), known_session=never)).event
-
-    assert event.scope == f"private:{HUMAN}"
-
-
-async def test_the_allowlist_still_does_not_govern_a_dm_either_way() -> None:
-    """It masked the bug: the `app_mention` copy of a DM was dropped for being
-    off-allowlist, so only the default empty allowlist showed it."""
+    a DM as a channel — and the `app_mention` copy was then dropped for being
+    off-allowlist. The channel id says what kind of conversation it is."""
     body = as_mention(dm(f"<@{BOT}> what did we decide?"))
 
     decision = await normalize(
         body, context=context(allowed=frozenset({"C1"})), known_session=never
     )
 
-    assert accepted(decision).event.scope == f"private:{HUMAN}"
-
-
-@pytest.mark.parametrize(
-    ("channel", "expected"),
-    [("D1", f"private:{HUMAN}"), ("C1", "channel:C1"), ("G1", "channel:G1")],
-)
-async def test_only_a_d_channel_is_a_one_to_one(channel: str, expected: str) -> None:
-    """`D` is the one-to-one with the bot. A private channel or a group DM is
-    `G`, and neither belongs to one person."""
-    assert scope_for(channel, HUMAN, is_dm=channel.startswith("D")) == expected
+    assert accepted(decision).event.author == HUMAN
 
 
 # -- revisions ----------------------------------------------------------------
@@ -623,24 +598,25 @@ async def test_the_same_message_has_one_id_however_it_arrives() -> None:
     assert as_message.external_id == as_mention.external_id == f"slack:{TEAM}:C1:1700000000.000100"
 
 
-# -- scope --------------------------------------------------------------------
+# -- one pool (#265) ----------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("body", "expected"),
+    "body",
     [
-        (dm(), f"private:{HUMAN}"),
-        (in_channel(), "channel:C1"),
-        (in_channel() | {"channel_type": "group"}, "channel:C1"),
-        (in_channel() | {"channel_type": "mpim"}, "channel:C1"),
+        dm(),
+        in_channel(),
+        in_channel() | {"channel_type": "group"},
+        in_channel() | {"channel_type": "mpim"},
     ],
 )
-async def test_nothing_from_slack_is_scoped_workspace(body: dict[str, Any], expected: str) -> None:
-    """`workspace` is the widest scope there is. Widening one is a decision for
-    #24 with a person in it, not a default every public channel picks up."""
+async def test_everything_from_slack_is_one_pool(body: dict[str, Any]) -> None:
+    """Siatt serves one person. A DM and a channel are that person talking in
+    two places, and a fact learned in either answers a question asked in the
+    other — which the per-channel scoping made impossible (#265)."""
     event = accepted(await normalize(body, context=context(), known_session=always)).event
 
-    assert event.scope == expected != "workspace"
+    assert event.scope == "workspace"
 
 
 # -- and the import costs nothing either --------------------------------------
@@ -666,10 +642,10 @@ def test_the_judgements_import_without_the_slack_extra() -> None:
         sys.meta_path.insert(0, Absent())
 
         import siatt.adapters.slack as package
-        from siatt.adapters.slack.events import normalize, scope_for
+        from siatt.adapters.slack.events import normalize
 
         assert "slack_bolt" not in sys.modules, "something imported it anyway"
-        assert package.scope_for is scope_for
+        assert package.normalize is normalize
         """
     )
 

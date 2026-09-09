@@ -319,72 +319,41 @@ def test_a_patch_cannot_rewrite_an_id_or_a_creation_date(corpus: Corpus) -> None
         )
 
 
-def test_visibility_cannot_be_widened(corpus: Corpus) -> None:
-    """The one bug that leaks a DM into a public channel."""
-    doc = corpus.add(MemoryDoc.new(type="fact", title="Private thing", visibility="private:U01"))
-    with pytest.raises(PatchError, match="never widened"):
-        corpus.compiler().compile(
-            [Update(id=doc.id, frontmatter={"visibility": "workspace"})], job="promote"
-        )
+def test_every_patch_type_may_cross_an_old_scope(corpus: Corpus) -> None:
+    """One person, one pool (#265).
 
-
-def test_narrowing_visibility_is_allowed(corpus: Corpus) -> None:
-    doc = corpus.add(MemoryDoc.new(type="fact", title="Open thing"))
-    changes = corpus.compiler().compile(
-        [Update(id=doc.id, frontmatter={"visibility": "channel:C01"})], job="promote"
-    )
-    assert MemoryDoc.parse(changes[0].content).frontmatter.visibility == "channel:C01"  # type: ignore[union-attr]
-
-
-def test_no_patch_type_can_widen_visibility(corpus: Corpus) -> None:
-    """Every route to an existing memory, checked in one place.
-
-    #41 in spirit and #42 in fact: `supersede` was the one patch type with no
-    visibility check, and a private memory could be restated as a workspace one
-    and archived out of sight. A parametrized-by-construction test rather than
-    three separate ones, so that the next patch type that touches an existing
-    document has an obvious place to fail.
+    The corpus still holds files written when Siatt scoped memory per channel.
+    Every route to an existing memory used to refuse to cross that line, which
+    after #265 would leave those files unmergeable, unsupersedable, and stuck
+    with a `visibility` nothing reads. A parametrized-by-construction test, so
+    the next patch type that touches an existing document is covered here.
     """
-    private = corpus.add(
-        MemoryDoc.new(type="fact", title="Salary review", visibility="private:U01")
-    )
-    public = corpus.add(MemoryDoc.new(type="fact", title="Public thing"))
-    widened = MemoryDoc.new(type="fact", title="Salary review cycle", body="Second week of Nov.")
+    old = corpus.add(MemoryDoc.new(type="fact", title="Salary review", visibility="private:U01"))
+    other = corpus.add(MemoryDoc.new(type="fact", title="Other thing"))
+    successor = MemoryDoc.new(type="fact", title="Salary review cycle", body="Second week of Nov.")
 
     plans: dict[str, list[MemoryPatch]] = {
-        "update": [Update(id=private.id, frontmatter={"visibility": "workspace"})],
-        "merge": [Merge(into=public.id, from_ids=[private.id], body="both")],
-        "supersede": [Supersede(old_id=private.id, new=widened)],
+        "update": [Update(id=old.id, frontmatter={"visibility": "workspace"})],
+        "merge": [Merge(into=other.id, from_ids=[old.id], body="both")],
+        "supersede": [Supersede(old_id=old.id, new=successor)],
     }
     for name, plan in plans.items():
-        with pytest.raises(PatchError) as caught:
-            corpus.compiler().compile(plan, job="promote")
-        assert "visibility" in str(caught.value), f"{name} widened visibility"
+        assert corpus.compiler().compile(plan, job="promote"), f"{name} was refused"
 
 
-def test_supersede_may_still_narrow_or_keep_visibility(corpus: Corpus) -> None:
-    """The check refuses widening, not the operation."""
-    private = corpus.add(MemoryDoc.new(type="fact", title="Old note", visibility="private:U01"))
-    successor = MemoryDoc.new(
-        type="fact", title="New note", body="Restated.", visibility="private:U01"
-    )
+def test_rescoping_a_memory_does_not_restamp_updated(corpus: Corpus) -> None:
+    """`siatt rescope` rewrites the whole corpus. Stamping `updated` on every
+    file would make all of it the newest thing in it, and `updated` is the age
+    retrieval scores recency on and the retention floor measures."""
+    old = corpus.add(MemoryDoc.new(type="fact", title="Old note", visibility="channel:C01"))
 
     changes = corpus.compiler().compile(
-        [Supersede(old_id=private.id, new=successor)], job="promote"
+        [Update(id=old.id, frontmatter={"visibility": "workspace"})], job="rescope"
     )
+
     written = MemoryDoc.parse(changes[0].content)  # type: ignore[union-attr]
-    assert written.frontmatter.visibility == "private:U01"
-    assert private.id in written.frontmatter.supersedes
-
-
-def test_merging_across_visibility_scopes_is_refused(corpus: Corpus) -> None:
-    public = corpus.add(MemoryDoc.new(type="topic", title="Public"))
-    private = corpus.add(MemoryDoc.new(type="topic", title="Private", visibility="private:U01"))
-
-    with pytest.raises(PatchError, match="different visibility"):
-        corpus.compiler().compile(
-            [Merge(into=public.id, from_ids=[private.id], body="both")], job="reorganize"
-        )
+    assert written.frontmatter.visibility == "workspace"
+    assert written.frontmatter.updated == old.frontmatter.updated
 
 
 def test_creating_an_id_that_already_exists_is_refused(corpus: Corpus) -> None:

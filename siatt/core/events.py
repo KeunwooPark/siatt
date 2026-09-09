@@ -91,9 +91,9 @@ class InboundEvent(BaseModel):
     #: process memory for this immediate turn.
     credential_scrubbed: bool = False
 
-    #: The visibility scope anything learned here inherits. `workspace` is the
-    #: widest and the default; a DM or a private channel narrows it. Retrieval
-    #: filters on this before it ranks, so an adapter that gets it wrong leaks.
+    #: The visibility anything learned here is recorded with. One value, since
+    #: Siatt keeps one pool of memory for one person (#265); the column stays
+    #: because it says what a row was written under.
     scope: str = "workspace"
 
     #: The platform's id for whoever spoke, not a display name.

@@ -6,10 +6,9 @@ a person can open, disagree with, and revert.
 
 The shape of one run:
 
-1. Read the pending observations and group them by `(subject, scope)`. The pair
-   rather than the subject, because two visibility scopes must never meet
-   inside one prompt — a group is reconciled as a unit, and the unit inherits
-   one audience.
+1. Read the pending observations and group them by subject. A group is
+   reconciled as a unit, so the subject is what decides which claims are
+   argued against each other in one prompt.
 2. For each group, retrieve the memories already in the corpus that compete
    with it. This is the step that makes a restated fact an *update* instead of
    a second file saying the same thing.
@@ -25,11 +24,11 @@ touch git. `promote` may not emit `Delete` at all, which `PatchCompiler`
 enforces rather than trusts (#13); only `forget` deletes, and only what is
 already archived.
 
-**Visibility is inherited.** Every group carries one scope, retrieval is
-filtered to it, and a plan that sets anything else on a document it creates is
-corrected to the group's scope before compiling — loudly, because a model
-getting that wrong is worth knowing about, and rejecting the plan over it would
-lose the fact instead.
+**Visibility is not the model's to choose.** Every memory is written
+`workspace` — Siatt serves one person and keeps one pool (#265) — and a plan
+that sets anything else on a document it creates is corrected before compiling,
+loudly. Rejecting the plan over it would lose the fact to punish the
+formatting.
 
 **Re-running is a no-op.** Idempotence comes from the observations table: a run
 that commits marks its inputs `promoted`, and the next run finds nothing
@@ -59,10 +58,10 @@ from siatt.memory.consolidate import (
     unanswered,
 )
 from siatt.memory.document import (
+    WORKSPACE,
     Frontmatter,
     MemoryDoc,
     MemoryError_,
-    is_visibility,
     new_memory_id,
 )
 from siatt.memory.ltm import ApplyResult, Change, CommitMeta, MemoryStore, MemoryStoreError
@@ -119,7 +118,7 @@ writing another file about the same thing.
 Return a JSON array of patch objects. The allowed operations are:
 
 - `{{"type": "create", "memory": {{"frontmatter": {{"id": "<memory id>",
-  "type": "fact", "title": "<title>", "tags": [], "visibility": "<scope>",
+  "type": "fact", "title": "<title>", "tags": [], "visibility": "workspace",
   "created": "<timestamp>", "updated": "<timestamp>"}}, "body": "<prose>"}},
   "path": "memory/<dir>/<slug>.md"}}` — a subject the corpus says nothing about
   yet. The frontmatter fields must be nested under `memory.frontmatter`; they
@@ -153,9 +152,8 @@ rather than append when a file starts covering two subjects.
 {ids}
 
 Set `created` and `updated` to {now} on anything you create.
-Set `visibility` to exactly `{scope}` on anything you create. Every observation
-here came from a conversation with that audience, and a memory may not be
-written to a wider one.
+Set `visibility` to exactly `{scope}` on anything you create. It is the only
+value a memory carries.
 
 {schema}"""
 
@@ -180,10 +178,9 @@ applied — so the memory keeps your sentence and loses the evidence it claimed.
 
 @dataclass(frozen=True, slots=True)
 class Group:
-    """The observations about one subject, from one audience."""
+    """The observations about one subject."""
 
     subject: str
-    scope: str
     rows: list[dict[str, Any]]
 
     @property
@@ -383,7 +380,7 @@ class Promoter:
                 return plan, compiler.compile(plan, job=JOB), None
             except PatchError as exc:
                 problem = str(exc)
-                unshown = self._collided(exc.rejections, group, shown=extra)
+                unshown = self._collided(exc.rejections, shown=extra)
                 if not unshown:
                     break
                 log.info(
@@ -395,16 +392,13 @@ class Promoter:
         return [], [], problem
 
     def _collided(
-        self, rejections: Sequence[Rejection], group: Group, *, shown: Mapping[str, str]
+        self, rejections: Sequence[Rejection], *, shown: Mapping[str, str]
     ) -> dict[str, str]:
         """The memories a plan collided with, as competition for the next ask.
 
-        Scoped to the group exactly as `_competing` is. A file sitting at the
-        path the plan wanted is not thereby a file this group's audience may
-        read, and "the model needs to see it" is not a reason to put a private
-        memory in front of a workspace prompt. It is read from disk rather than
-        trusted to the manifest, because visibility is a property of the
-        document and a manifest can be stale.
+        Parsed before it is offered, and skipped when it does not parse: a file
+        the model cannot read is one it cannot reconcile against, and putting a
+        broken document in the prompt spends the second ask on it.
         """
         files: dict[str, str] = {}
         for path in sorted({r.conflict for r in rejections if r.conflict} - set(shown)):
@@ -412,17 +406,9 @@ class Promoter:
             if content is None:
                 continue
             try:
-                doc = MemoryDoc.parse(content, source=path)
+                MemoryDoc.parse(content, source=path)
             except MemoryError_ as exc:
                 log.warning("promote: %s is in the way and does not parse: %s", path, exc)
-                continue
-            if doc.frontmatter.visibility != group.scope:
-                log.warning(
-                    "promote: %s is in the way of a %r group and is %r, so it was not shown",
-                    path,
-                    group.scope,
-                    doc.frontmatter.visibility,
-                )
                 continue
             files[path] = content
         return files
@@ -448,18 +434,12 @@ class Promoter:
         to argue with, and the second ask has twice the room. A reply that *is*
         a plan is decoded once; being wrong is what `max_attempts` is for.
         """
-        if not is_visibility(group.scope):
-            # The scope came off a session row, so this is a bug upstream
-            # rather than anything the model did. Writing the memory anyway
-            # would put an unparseable `visibility` in the corpus, and every
-            # later read of that file fails.
-            return [], f"{group.scope!r} is not a visibility scope a memory may carry"
         competing = await self._competing(group) | dict(extra or {})
         claims, files = group.rendered(await self._known_blobs())
         task = TASK.format(
             ids="\n".join(f"  {i}" for i in _fresh_ids(len(group.rows) + SPARE_IDS)),
             now=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            scope=group.scope,
+            scope=WORKSPACE,
             schema=render_schema_md(),
             attachments=CITING if files else "",
         )
@@ -477,23 +457,20 @@ class Promoter:
                     plan = decode_plan(response.text, job=JOB)
                 except PatchError as exc:
                     return [], str(exc)
-                return _normalize_plan(plan, group.scope), None
+                return _normalize_plan(plan), None
             log.warning("promote: %s, planning %r", silence, group.subject)
         return [], silence
 
     async def _competing(self, group: Group) -> dict[str, str]:
         """The memories already in the corpus that this group is about.
 
-        Scoped to the group, so a private observation is never reconciled
-        against — or into — a memory it is not allowed to see. Read as whole
-        files rather than as the retriever's snippets, because an `Update`
-        rewrites a body and a model shown half of one would write half of one
-        back.
+        Read as whole files rather than as the retriever's snippets, because an
+        `Update` rewrites a body and a model shown half of one would write half
+        of one back.
         """
         query = " ".join([group.subject, *(str(row["claim"]) for row in group.rows)])
         retrieval = await self._retriever.retrieve(
             query,
-            scope=group.scope,
             include_pinned=False,
             limit=self._settings.competing_memories,
         )
@@ -628,17 +605,13 @@ class Promoter:
 def _group(rows: Sequence[dict[str, Any]]) -> list[Group]:
     """Pending observations, gathered by the unit `promote` reconciles.
 
-    `(subject, scope)` and not `subject`: a group becomes one prompt and one
-    memory's audience, and mixing two scopes in it is how something said in a
-    DM ends up in a workspace file.
+    A group becomes one prompt, so the subject is what decides which claims are
+    reconciled against each other.
     """
-    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        grouped.setdefault((str(row["subject"]), str(row["scope"])), []).append(row)
-    return [
-        Group(subject=subject, scope=scope, rows=members)
-        for (subject, scope), members in grouped.items()
-    ]
+        grouped.setdefault(str(row["subject"]), []).append(row)
+    return [Group(subject=subject, rows=members) for subject, members in grouped.items()]
 
 
 def _fresh_ids(count: int) -> list[str]:
@@ -684,25 +657,23 @@ def _memory_ids(plan: Sequence[MemoryPatch]) -> list[str]:
     return ids
 
 
-def _normalize_plan(plan: Sequence[MemoryPatch], scope: str) -> list[MemoryPatch]:
-    """Enforce scope and drop model-supplied update timestamps.
+def _normalize_plan(plan: Sequence[MemoryPatch]) -> list[MemoryPatch]:
+    """Stamp the one visibility, and drop model-supplied update timestamps.
 
-    Corrected rather than rejected. The scope is not the model's to choose, so
+    Corrected rather than rejected. Visibility is not the model's to choose, so
     a plan that got it wrong is not a plan to argue with — and rejecting it
-    would throw away the fact to punish the formatting. `PatchCompiler` still
-    refuses to *widen* an existing memory, which is the case this cannot reach.
+    would throw away the fact to punish the formatting.
     """
     corrected: list[MemoryPatch] = []
     for patch in plan:
         match patch:
             case Create():
-                corrected.append(patch.model_copy(update={"memory": _scoped(patch.memory, scope)}))
+                corrected.append(patch.model_copy(update={"memory": _scoped(patch.memory)}))
             case Supersede():
-                corrected.append(patch.model_copy(update={"new": _scoped(patch.new, scope)}))
+                corrected.append(patch.model_copy(update={"new": _scoped(patch.new)}))
             case Update() if {"visibility", "updated"} & patch.frontmatter.keys():
-                # An update may not change visibility at all: the memory's
-                # audience was set when it was written, and this plan is about
-                # one group's claims, not about who may read it.
+                # An update may not change visibility at all: there is one
+                # value, and this plan is about a group's claims.
                 if "visibility" in patch.frontmatter:
                     log.warning(
                         "promote: dropped a visibility change from an update to %s", patch.id
@@ -730,18 +701,16 @@ def _normalize_plan(plan: Sequence[MemoryPatch], scope: str) -> list[MemoryPatch
     return corrected
 
 
-def _scoped(doc: MemoryDoc, scope: str) -> MemoryDoc:
-    if doc.frontmatter.visibility == scope:
+def _scoped(doc: MemoryDoc) -> MemoryDoc:
+    if doc.frontmatter.visibility == WORKSPACE:
         return doc
     log.warning(
-        "promote: a plan set visibility %r on a new memory; the observations came from %r",
+        "promote: a plan set visibility %r on a new memory; every memory is %r",
         doc.frontmatter.visibility,
-        scope,
+        WORKSPACE,
     )
     # Re-validated rather than `model_copy`d in: `model_copy` does not run the
     # validators, and an unparseable `visibility` written to a file is one
-    # every later read of that file fails on. `_plan` has already checked the
-    # scope, so this cannot raise; it is here because "cannot" is a property of
-    # today's callers.
-    fields = doc.frontmatter.model_dump() | {"visibility": scope}
+    # every later read of that file fails on.
+    fields = doc.frontmatter.model_dump() | {"visibility": WORKSPACE}
     return doc.model_copy(update={"frontmatter": Frontmatter.model_validate(fields)})

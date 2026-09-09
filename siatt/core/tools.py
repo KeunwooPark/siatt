@@ -30,12 +30,11 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class ToolContext:
-    """Who is calling, and what they are allowed to see.
+    """Who is calling, and on whose behalf.
 
-    Passed explicitly rather than carried in a context variable. `scope` decides
-    whether a tool call may read a private memory, and a security-relevant value
-    hidden in ambient state is one that eventually gets read from the wrong
-    place. The model never supplies it; the session does.
+    Passed explicitly rather than carried in a context variable: a value hidden
+    in ambient state is one that eventually gets read from the wrong place. The
+    model never supplies any of it; the session does.
     """
 
     session_id: str = "cli"
@@ -69,9 +68,9 @@ class ToolContext:
     #: it stops without knowing (#259).
     sends_messages: bool = False
     #: Memory ids the tools pulled into this turn, in the order they were
-    #: reached. Mutable inside a frozen context on purpose: the scope above is
-    #: a permission and must not be reassignable, while this is a notebook the
-    #: turn writes as it goes. It is what lets a 👍 on the answer reach the
+    #: reached. Mutable inside a frozen context on purpose: the fields above
+    #: are what the session decided and must not be reassignable, while this is
+    #: a notebook the turn writes as it goes. It is what lets a 👍 on the answer reach the
     #: memories a `memory_search` found, not only the ones pre-injected (#36).
     recalled: list[str] = field(default_factory=list)
     #: Digests of attachments a tool has put in front of the model this turn,
@@ -83,8 +82,7 @@ class ToolContext:
     #: Digests of attachments this turn has asked to send back, in the order
     #: they were named. The same kind of notebook as `surfaced`, read twice: by
     #: `send_file` as the turn's remaining budget, and by the agent loop at the
-    #: end of the turn, which resolves each one back through the store — under
-    #: the scope, because what is written here is a digest and not a permission.
+    #: end of the turn, which resolves each one back through the store.
     outgoing: list[str] = field(default_factory=list)
     #: Messages this turn has decided to send *before* the one it ends with, in
     #: the order it named them. The same kind of notebook as `outgoing`, and

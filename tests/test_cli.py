@@ -163,6 +163,41 @@ def test_audit_lists_every_memory_by_scope_even_when_manifest_is_stale(
     assert "2 memory(s) across 2 scope(s)" in result.output
 
 
+def test_rescope_rewrites_the_old_scopes_in_one_commit(rig: tuple[Path, Path]) -> None:
+    """The corpus predates #265. A `visibility` nothing reads is a field that
+    says something untrue about where a memory may be recalled."""
+    config, clone = rig
+    bootstrap(clone)
+    old = MemoryDoc.new(
+        type="fact", title="Salary review", body="An outcome.", visibility="private:U01"
+    )
+    target = clone / old.suggested_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(old.render())
+    Manifest.rebuild(clone)[0].save(clone)
+    GitRepo.at(clone).commit("seed")
+
+    result = runner.invoke(app, ["rescope", "--config", str(config)])
+
+    assert result.exit_code == 0, result.output
+    assert "rescoped 1 memory(s)" in result.output
+    written = MemoryDoc.parse(target.read_text())
+    assert written.frontmatter.visibility == "workspace"
+    assert written.frontmatter.updated == old.frontmatter.updated, "not a content change"
+
+
+def test_rescope_says_so_when_there_is_nothing_to_do(rig: tuple[Path, Path]) -> None:
+    config, clone = rig
+    bootstrap(clone)
+    Manifest.rebuild(clone)[0].save(clone)
+    GitRepo.at(clone).commit("seed")
+
+    result = runner.invoke(app, ["rescope", "--config", str(config)])
+
+    assert result.exit_code == 0, result.output
+    assert "already `workspace`" in result.output
+
+
 def test_audit_reports_unreadable_memories(rig: tuple[Path, Path]) -> None:
     config, clone = rig
     bootstrap(clone)

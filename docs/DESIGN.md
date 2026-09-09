@@ -201,7 +201,7 @@ CREATE TABLE inbox (
 CREATE TABLE sessions (
   id            TEXT PRIMARY KEY,       -- 'slack:T01:C0123:1756890000.123'
   surface       TEXT NOT NULL,
-  scope         TEXT NOT NULL,          -- visibility scope for anything learned here
+  scope         TEXT NOT NULL,          -- always 'workspace'; see §11.1
   created_at    TEXT NOT NULL,
   last_active   TEXT NOT NULL
 );
@@ -278,7 +278,7 @@ CREATE TABLE attachment_refs (
   session_id    TEXT,
   message_id    TEXT REFERENCES messages(id) ON DELETE CASCADE,
   author        TEXT,
-  scope         TEXT NOT NULL,          -- §11.1, inherited from the event
+  scope         TEXT NOT NULL,          -- inherited from the event; §11.1
   name          TEXT,                   -- what the surface called it
   created_at    TEXT NOT NULL
 );
@@ -293,13 +293,11 @@ CREATE UNIQUE INDEX attachment_refs_arrival
 took from being cited as evidence in the corpus. The earliest permitted arrival
 decides, so uploading a drawing back into the thread cannot relabel it.
 
-**Scope is on the ref, not on the blob**, and that is why there are two tables.
-The same picture sent in a DM and posted in a public channel is one set of bytes
-with two visibilities, and the wider arrival must not widen the narrower one —
-deduplicating on content alone would make *"someone already shared this in
-#general"* into a way to read a DM. Every read takes the requester's scope and
-applies the rule from §11.1 before it returns anything, exactly as retrieval
-does for chunks.
+**Arrivals are on the ref, not on the blob**, and that is why there are two
+tables. The same picture sent twice is one set of bytes and two arrivals, each
+with its own name, time and conversation — and what a turn may cite is decided
+from the arrival (§11.1), so deduplicating on content alone would not make a
+file from an older thread nameable in this one.
 
 The unique index is the trick from the inbox (§4.3): a queue that delivers at
 least once, plus an arrival key, stores an attachment at most once without
@@ -316,8 +314,8 @@ blob back in the database through the back door. The bytes are attached on the
 way past: the agent hydrates the history it is about to send, the compat layer
 encodes it, and the field holding them is excluded from everything the store
 writes, so a block read back off disk always means "these bytes are somewhere,
-go and get them". Hydration is scoped like every other attachment read, so a
-hash naming a blob from a narrower conversation resolves to nothing.
+go and get them". A hash naming a blob the store no longer holds resolves to
+nothing, and the compat layer says so in words rather than failing the turn.
 
 Video is stored, referenced, and never sent. No chat-completions endpoint takes
 one, and frame extraction is a different project; the note says so rather than
@@ -353,16 +351,15 @@ beside the claim, an extraction cites them the same way, and both resolve agains
 the attachments of the conversation they are in. What resolves is stored on the
 observation with the filename beside it (§4.1), and `promote` is shown the
 resolved lines when it plans that group. So the model names a candidate and
-deterministic code turns it into a digest — the same posture as `scope`, and for
-the same reason. A handle that resolves to nothing or to two blobs is refused
+deterministic code turns it into a digest. A handle that resolves to nothing or to two blobs is refused
 where there is a model to tell, and dropped where there is not: an extraction
 runs hours after the conversation ended, and a claim with no picture beats no
 claim at all.
 
 **Reading one back shows the picture, not its size.** `memory_read` resolves
 every reference in the document it returns and says what each one is and whether
-it is still there — and for an image still in scope it also puts the picture in
-the turn. Without that half, a photograph sent this morning was looked at and
+it is still there — and for an image the store still holds it also puts the
+picture in the turn. Without that half, a photograph sent this morning was looked at and
 the same photograph reached a week later through the memory citing it was a mime
 type and a byte count, which reads as Siatt having forgotten something it is
 still holding.
@@ -373,9 +370,8 @@ what it surfaced, and the loop puts those blocks on the tool-result message,
 after the results. Both families already take that shape, which is why this is
 not a change to the compat layer — Anthropic wants a user turn whose
 `tool_result` blocks lead, and the OpenAI mapping splits the same message into
-`tool` entries followed by a user turn of parts. Hydration and the scope check
-are the ones an upload goes through, so a memory that may be read can cite a blob
-that may not, and that one stays a sentence. Bounded per turn rather than per
+`tool` entries followed by a user turn of parts. A memory can cite a blob the
+collector has taken since, and that one stays a sentence. Bounded per turn rather than per
 call: a turn that opens four memories citing ten photographs each is what the
 bound is for, and past it the note names the file and says it was not shown.
 
@@ -401,9 +397,8 @@ failure worth engineering against is not an unsent file, it is an answer that
 says *"here it is"* where nothing was sent — so the capability travels with the
 turn from the surface that opened it, and the tool reads it before it resolves
 anything. A surface acquires it by wiring it up; the default is mute. The digests
-on the notebook are resolved back through the store, under the session's scope,
-after the loop ends: what a tool wrote down is a digest, and a digest is not a
-permission.
+on the notebook are resolved back through the store after the loop ends: what a
+tool wrote down is a digest, and a digest is not a file.
 
 The reference is not trusted because a model wrote it. Consolidation reads
 memory files and writes memory files, so once one of these exists the model has
@@ -484,7 +479,7 @@ CREATE TABLE chunks (
   path          TEXT NOT NULL,
   ordinal       INTEGER NOT NULL,
   text          TEXT NOT NULL,
-  scope         TEXT NOT NULL,          -- denormalized from frontmatter, for filtering
+  scope         TEXT NOT NULL,          -- denormalized from frontmatter; §11.1
   salience      REAL NOT NULL,
   updated_at    TEXT NOT NULL
 );
@@ -618,8 +613,7 @@ not stampede when it comes back.
 
 **There is no channel in this table.** `session_id`, `channel`, `reply_to` and
 `scope` are copied from the conversation that created the task and are never
-settable afterwards — §7.1 for why that is structural rather than a validation,
-§11.1 for what it means for visibility.
+settable afterwards — §7.1 for why that is structural rather than a validation.
 
 `destination` is the one thing that says a firing lands somewhere other than
 the thread it was asked in, and it is a *name*, never an id:
@@ -634,9 +628,8 @@ The name is resolved against config **at fire time**, not at creation, so where
 a schedule posts is something the operator holds and keeps holding: a name that
 is no longer configured resolves to nothing, and the run fails and pauses the
 task rather than falling back to anywhere else. A firing with a destination runs
-under a session of its own (`slack:task:<id>@<fire>`) and under the scope of
-where it lands rather than of who asked for it — a task set up in a DM and
-pointed at a channel by the operator can say what that channel may already see,
+under a session of its own (`slack:task:<id>@<fire>`) — a task set up in a DM and
+pointed at a channel by the operator posts there,
 and nothing more.
 
 Siatt's own posts are the one place it opens a thread rather than joining one,
@@ -673,7 +666,7 @@ id: mem_01K8XQ4W2N7B6VJ3ZC9F0RTKME   # ULID. Stable forever. Never rewritten.
 type: person                          # person | project | topic | fact | journal
 title: Deploy pipeline ownership
 tags: [infra, ownership]
-visibility: workspace                 # workspace | channel:C0123 | private:U0456
+visibility: workspace                 # always `workspace`; see §11.1
 created: 2026-09-03T10:12:00Z
 updated: 2026-09-03T10:12:00Z
 confidence: 0.9                       # how sure we are it is true
@@ -963,17 +956,15 @@ Hybrid, cheap-first, with an agentic escape hatch.
    - always-on pinned memories (user profile, standing instructions)
 3. **Fusion.** Reciprocal Rank Fusion across the lexical and vector lists, then
    multiply by `salience × recency_decay`.
-4. **Filter.** Drop anything the requester's scope does not permit. This happens
-   before packing, never after.
-5. **Pack.** Dedupe by `memory_id`, truncate to the token budget.
-6. **Rerank.** Only when the candidate pool is large enough to justify the call.
+4. **Pack.** Dedupe by `memory_id`, truncate to the token budget.
+5. **Rerank.** Only when the candidate pool is large enough to justify the call.
 
 ### 8.1 Retrieval as a tool, too
 
 Pre-injection covers the common case at zero added latency. It will still miss.
 So the agent also gets:
 
-- `memory_search(query, scope_hint, limit)` → ranked snippets with IDs
+- `memory_search(query, limit)` → ranked snippets with IDs
 - `memory_read(memory_id)` → the full file, plus what its attachments are and the images among them
 - `memory_write(kind, subject, claim, attachments)` → enqueue an observation (never a direct write)
 
@@ -1206,8 +1197,7 @@ elided (§8.5) rather than sent in full.
 ### 8.6 Explainability
 
 `siatt why "<question>"` prints the constructed query, every candidate with its
-lexical/vector/fused/final scores, what was dropped by scope filtering, and the
-final packed context.
+lexical/vector/fused/final scores, and the final packed context.
 
 Build this in week one. Retrieval you cannot debug is retrieval you cannot
 improve, and every quality complaint about this system will bottom out in "why
@@ -1363,10 +1353,9 @@ Details that bite, in rough order of how quickly they will bite:
   so both tests that make a reply worth answering say no. `slack_threads` maps
   the root message to the conversation that posted it, and the reply continues
   that conversation instead of opening an empty one beneath it.
-- **Nothing from Slack is `workspace`.** A DM is `private:<user>`, anything else
-  is `channel:<channel>`. `workspace` is the widest scope there is; widening one
-  is a decision with a person in it, not a default every public channel picks
-  up on the way in.
+- **Everything from Slack is one pool.** A DM and a channel are the same person
+  talking in two places, so a fact learned in either answers a question asked in
+  the other (§11.1).
 - **Streaming** = post a placeholder, then `chat.update` at roughly 1/sec. Never
   per-token; you will hit rate limits and the UI flickers. Frames may be
   dropped; they may not be reordered. Only one write is in flight at a time and
@@ -1407,8 +1396,8 @@ Details that bite, in rough order of how quickly they will bite:
 - **Attachments need `files:read`**, and the failure without it is silent in the
   worst way: Slack answers a private-file request with a 302 to a sign-in page,
   or a 200 carrying that page's HTML. Both are refused rather than stored
-  (§4.1.1), and `siatt doctor` names the scope so it is discovered before
-  somebody sends a photograph.
+  (§4.1.1), and `siatt doctor` names the missing OAuth scope so it is discovered
+  before somebody sends a photograph.
 - **Sending one back needs `files:write`**, and its silent failure is the mirror
   image: the answer says *"here it is"* and nothing arrives. `files.upload` is
   retired, so the flow is `getUploadURLExternal` → POST the bytes →
@@ -1434,46 +1423,45 @@ already is: the person asking and the process answering share a filesystem, so
 the blob's own path is the whole delivery. Writing a copy into their working
 directory would be a file they did not ask for, under a name a stranger chose —
 that belongs behind a flag if it is ever wanted, not in the default path. The
-path is read through `Attachments.path`, scoped like every other read, and a
-blob the collector has taken since prints the reason instead.
+path is read through `Attachments.path`, and a blob the collector has taken
+since prints the reason instead.
 
 ---
 
 ## 11. Security and privacy
 
-### 11.1 Visibility scopes
+### 11.1 One pool
 
-Every memory carries `visibility`: `workspace`, `channel:C0123`, or
-`private:U0456`. Observations inherit the scope of the session that produced
-them. Retrieval filters by requester scope **before** ranking and packing.
+**Siatt serves one person.** Every conversation on every surface is that person
+talking, so there is one pool of memory and nothing filters on who is asking. A
+fact learned in one channel answers a question asked in another, and in a DM.
 
-This is not polish. **The number-one failure mode of a shared-memory chat bot is
-repeating something from a DM in a public channel.** It has to be in the data
-model from day one, because retrofitting a scope column onto an existing corpus
-means re-deriving the scope of every memory you already wrote.
+This replaces the visibility scoping this section used to describe (#265), and
+the reason it is worth writing down is that the old design was not wrong about
+its own premise — it was answering a different question. Scoping exists to stop
+a *shared* memory bot repeating something from a DM in a public channel. With
+one person on the other end of every conversation there is no second audience
+for it to protect, and what it did instead was hide the user's own facts from
+them: a preference stated in one channel was invisible from the next, and the
+turn that could not see it answered "nothing is stored".
 
-Corollary: never write private-channel or DM content to LTM unless the repo is
-confirmed private *and* the channel is opted in.
+The `scope` columns and the `visibility` frontmatter field stay, with
+`workspace` as the only value written. They record what a row was written
+under, which is a fact about history rather than a permission. Nothing reads
+them to decide anything. Re-threading the field would be a much smaller job
+than re-deriving it from a corpus that never recorded it, which is why it was
+kept rather than dropped.
 
-An attachment inherits the scope of the message it arrived on, and carries it on
-the *arrival* rather than on the bytes (§4.1.1). Content-addressing is what makes
-one picture one file; it must not also make one picture one permission.
+What this does **not** relax: what a conversation may *cite*. A model may name
+a file somebody sent where it is being asked, and a digest from anywhere else —
+an older thread, a memory it read a moment ago, its own invention — resolves to
+nothing (§4.1.1). That line is the session, not the scope, and it is about a
+model reaching for a file by guessing twelve characters rather than about one
+person being kept from their own pictures.
 
-A standing task inherits the visibility of the conversation that created it and
-keeps it for as long as it runs (§4.4). Asked for in a DM it fires in that DM,
-under that DM's scope; asked for in a channel it stays in that channel. The
-scope is copied from the session at creation and is never read from the request,
-so *"and post it publicly every morning"* typed into a DM is not something that
-can be said.
-
-The operator can say it, with `siatt task add --destination`, and that firing
-runs under the **destination's** scope rather than the creator's — not as a
-convenience, but because the alternative is the leak this section is about. A
-task carrying `private:U0456` into a public channel would retrieve that
-person's memories and say them there; carrying `channel:C0123` instead means it
-can only say what the channel it is posting in may already see. The prompt is
-still the owner's own words, published deliberately by the person who runs the
-install, which is a different act from a memory escaping its scope.
+The privacy posture that remains is at the install boundary rather than inside
+it: the LTM repo must be private (§11.3), the daemon re-checks that on startup,
+and `slack.allowed_channels` is what says which channels Siatt reads at all.
 
 ### 11.2 Secrets
 
@@ -1548,7 +1536,7 @@ siatt/
     ltm.py             git working copy, commit path, lease
     patch.py           MemoryPatch types + validator + applier
     index.py           chunking, FTS5, embeddings
-    retrieve.py        candidates, RRF, scope filter, pack
+    retrieve.py        candidates, RRF, pack
     consolidate/
       episode_close.py
       promote.py
@@ -1619,7 +1607,7 @@ optimization of a thing that must already work.
 | Prompt injection via a search result or a fetched page | Same delimited block; tool results never enter the extraction transcript; no response body is ever quoted into an error |
 | SSRF via a url the model read off a page | Addresses judged, not names; every DNS answer checked; the approved address is the one connected to; every redirect hop re-judged; http(s) on 80/443 only (§8.3) |
 | SSRF via the hundreds of requests a rendered page makes | Every request through the same guard; image/media/font never fetched; the document pinned to the approved address; nothing clicked or submitted; off by default (§8.4) |
-| DM content leaking into public channels | `visibility` in the data model from day one; filter before ranking |
+| The LTM repo becoming public | `siatt doctor` and the daemon both re-check on startup (§11.3); the corpus is one person's and is not partitioned inside it (§11.1) |
 | LTM repo grows unboundedly | `forget` + archive tier; `reorganize` splits and merges |
 | A standing task spends money every day with nobody watching | Per-owner cap and an interval floor (`[tasks]`); every firing is metered like any other turn and shows up in `siatt cost`; `siatt task list` shows every task and what it last did. Note that `[budget]`'s ceiling pauses utility calls, not a scheduled answer — the cap and the floor are what actually bound this |
 | A task's prompt ages into nonsense | The prompt is stored as written and never rewritten, so it is auditable rather than mysterious; `siatt task list` prints it; `fire_once` for anything that has an end. Genuinely weak — nothing here notices that an answer stopped being useful |
@@ -1633,8 +1621,12 @@ optimization of a thing that must already work.
 - **Embedding provider churn.** Changing embedding models invalidates the whole
   vector index. Version the index and rebuild in the background, or accept the
   downtime?
-- **Multi-workspace.** If Siatt ever serves two Slack workspaces, does each get its
-  own LTM repo, or one repo with workspace-level scopes?
+- **More than one person.** §11.1 is built on Siatt serving one. If it ever
+  serves two people, or two Slack workspaces, the scoping removed in #265 is
+  what would have to come back — and the corpus by then would carry no record
+  of which conversation each memory came from beyond its `source_refs`. Does
+  each get its own install and its own LTM repo, which needs nothing new, or
+  does one install partition again?
 - **Conflict resolution with human edits.** A human edits `people/jane.md` by hand
   while `promote` has a plan in flight against it. Rebase and retry, or detect and
   regenerate the plan?

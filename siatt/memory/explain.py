@@ -2,8 +2,8 @@
 
 Every quality complaint about a memory system bottoms out in "why did it not
 remember X", and the only honest answer is the whole pipeline: what was
-searched for, what came back, what each scoring step did to it, what the scope
-filter removed, and what actually fitted in the budget.
+searched for, what came back, what each scoring step did to it, and what
+actually fitted in the budget.
 
 Rendering lives here rather than in the CLI so that the same trace can be shown
 in a terminal now and in a Slack thread later without the explanation being
@@ -12,7 +12,7 @@ rewritten twice.
 
 from __future__ import annotations
 
-from siatt.memory.retrieve import Candidate, Retrieval, RetrievalTrace
+from siatt.memory.retrieve import Retrieval, RetrievalTrace
 
 
 def render_trace(retrieval: Retrieval, *, limit: int = 20) -> str:
@@ -22,7 +22,6 @@ def render_trace(retrieval: Retrieval, *, limit: int = 20) -> str:
 
     lines = _query(trace)
     lines += _candidates(trace, limit)
-    lines += _denied(trace)
     lines += _packed(retrieval, trace)
     return "\n".join(lines)
 
@@ -43,7 +42,6 @@ def _query(trace: RetrievalTrace) -> list[str]:
     # invisible to every other term in the sentence.
     if trace.dates:
         lines.append(f"  dates      {', '.join(trace.dates)}")
-    lines.append(f"  scope      {trace.scope}")
     return [*lines, ""]
 
 
@@ -65,31 +63,6 @@ def _candidates(trace: RetrievalTrace, limit: int) -> list[str]:
             f"{candidate.memory_id} {candidate.path}#{candidate.ordinal}"
         )
     lines.append("  * = packed into the prompt")
-    return [*lines, ""]
-
-
-def _denied(trace: RetrievalTrace) -> list[str]:
-    if not trace.denied:
-        return [
-            "SCOPE FILTER",
-            "  nothing was excluded by scope",
-            "",
-        ]
-    # One line per memory, not per chunk. Scope is a property of the document,
-    # so a memory with a header chunk and a body chunk printed the same sentence
-    # twice with nothing to tell the two lines apart — and this is the one
-    # command whose whole job is being legible about what happened (#70). The
-    # header still counts chunks, and so does the line when there is more
-    # than one.
-    by_memory: dict[str, list[Candidate]] = {}
-    for candidate in trace.denied:
-        by_memory.setdefault(candidate.memory_id, []).append(candidate)
-
-    lines = ["SCOPE FILTER", f"  {len(trace.denied)} chunk(s) never entered the ranking:"]
-    for chunks in by_memory.values():
-        first = chunks[0]
-        count = f" ({len(chunks)} chunks)" if len(chunks) > 1 else ""
-        lines.append(f"    {first.memory_id} {first.path}{count} — {first.denied}")
     return [*lines, ""]
 
 

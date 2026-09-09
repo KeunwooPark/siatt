@@ -156,10 +156,10 @@ async def test_the_picture_is_kept_and_goes_out_with_this_answer(
     said = await draw(attachments, FakeDrawer(), context)
 
     assert len(context.outgoing) == 1
-    held = await attachments.get(context.outgoing[0], scope="workspace")
+    held = await attachments.get(context.outgoing[0])
     assert held is not None
     assert held.mime == "image/png"
-    assert await attachments.read(held.sha256, scope="workspace") == png()
+    assert await attachments.read(held.sha256) == png()
     assert "going out with this answer" in said
     assert "Nothing has been sent yet" in said
 
@@ -172,7 +172,7 @@ async def test_the_file_is_named_after_the_prompt(store: Store, tmp_path: Path) 
 
     said = await draw(attachments, FakeDrawer(), context, prompt="A red circle on white paper")
 
-    held = await attachments.get(context.outgoing[0], scope="workspace")
+    held = await attachments.get(context.outgoing[0])
     assert held is not None
     assert held.name == "a-red-circle-on-white-paper.png"
     assert "a-red-circle-on-white-paper.png" in said
@@ -188,23 +188,24 @@ async def test_the_name_is_rebuilt_from_the_prompt_rather_than_sliced_out_of_it(
 
     await draw(attachments, FakeDrawer(), context, prompt="../../etc/passwd\nand a dot .")
 
-    held = await attachments.get(context.outgoing[0], scope="workspace")
+    held = await attachments.get(context.outgoing[0])
     assert held is not None
     assert held.name == "etc-passwd-and-a-dot.png"
 
 
-async def test_the_picture_inherits_the_scope_of_the_conversation(
+async def test_the_picture_is_recorded_as_arriving_in_this_conversation(
     store: Store, tmp_path: Path
 ) -> None:
-    """A drawing made in a DM is as private as a photograph sent in one."""
+    """A drawing is an arrival like any other, so it is citable exactly where it
+    was made and nowhere else."""
     attachments = files(store, tmp_path)
-    context = asking(scope="private:U1")
+    context = asking()
 
     await draw(attachments, FakeDrawer(), context)
 
     sha = context.outgoing[0]
-    assert await attachments.get(sha, scope="private:U1") is not None
-    assert await attachments.get(sha, scope="private:U2") is None
+    assert [r["sha256"] for r in await store.attachments_for_session("s1")] == [sha]
+    assert await store.attachments_for_session("s2") == []
 
 
 async def test_it_is_not_also_put_in_front_of_the_model(store: Store, tmp_path: Path) -> None:
@@ -225,7 +226,7 @@ async def test_what_it_draws_is_stored_as_generated(store: Store, tmp_path: Path
 
     await draw(attachments, FakeDrawer(), context)
 
-    rows = await store.attachments_for_session("s1", scope="workspace")
+    rows = await store.attachments_for_session("s1")
     assert [row["source"] for row in rows] == [GENERATED]
 
 
@@ -240,7 +241,7 @@ async def test_a_generated_picture_cannot_be_cited_but_can_still_be_sent(
     await draw(attachments, FakeDrawer(), context)
     sha = context.outgoing[0]
 
-    rows = await store.attachments_for_session("s1", scope="workspace")
+    rows = await store.attachments_for_session("s1")
 
     assert citable(rows) == {}
     assert sha in named(rows)

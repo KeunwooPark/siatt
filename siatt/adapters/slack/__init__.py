@@ -26,7 +26,6 @@ from siatt.adapters.slack.events import (
     SlackContext,
     message_id,
     normalize,
-    scope_for,
     session_id,
 )
 from siatt.adapters.slack.files import DEFAULT_FILE_HOSTS, SlackFiles
@@ -47,7 +46,6 @@ __all__ = [
     "SlackUser",
     "message_id",
     "normalize",
-    "scope_for",
     "session_id",
     "user_ref",
 ]

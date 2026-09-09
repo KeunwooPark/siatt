@@ -296,7 +296,7 @@ def _task_sink(cfg: Config) -> TaskNotifier | None:
     Into the thread the task was created in, which is the only place the
     message means anything — and never anywhere else: the channel and thread
     come off the task row, which copied them from the conversation that asked
-    for the task and cannot be made to point elsewhere (§11.1).
+    for the task and cannot be made to point elsewhere (§7.1).
 
     None on a build with no Slack, and that is not an error. A task created
     from a terminal has no thread to be told in, and refusing to pause a

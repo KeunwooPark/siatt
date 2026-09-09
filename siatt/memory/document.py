@@ -42,7 +42,13 @@ TYPE_DIRECTORY: dict[str, str] = {
 ID_PREFIX = "mem_"
 _ID = re.compile(rf"^{ID_PREFIX}[0-7][0-9A-HJKMNP-TV-Z]{{25}}$")
 
-#: `workspace`, or a Slack channel / user the memory is confined to.
+#: The only visibility a memory is written with. Siatt serves one person, so
+#: there is no second audience to keep one from and nothing filters on this —
+#: see `siatt/memory/retrieve.py` and #265.
+WORKSPACE = "workspace"
+
+#: `workspace`, or one of the narrower forms the corpus carried before #265.
+#: Still accepted so that a file written then still parses; nothing writes one.
 _VISIBILITY = re.compile(r"^(workspace|channel:[A-Za-z0-9_-]+|private:[A-Za-z0-9_-]+)$")
 
 _FENCE = "---"
@@ -100,8 +106,8 @@ class Frontmatter(BaseModel):
     title: str = Field(description="one line, human-readable; shown in the index")
     tags: list[str] = Field(default_factory=list, description="lowercase, for exact-match recall")
     visibility: str = Field(
-        default="workspace",
-        description="workspace | channel:C0123 | private:U0456; never widened once set",
+        default=WORKSPACE,
+        description="always `workspace`: Siatt serves one person and keeps one pool of memory",
     )
     created: datetime = Field(description="when this memory was first written")
     updated: datetime = Field(description="when it last changed")
@@ -146,10 +152,6 @@ class Frontmatter(BaseModel):
         # A naive timestamp compares wrong against every other one in the corpus,
         # and recency decay is scored on these.
         return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-
-    @property
-    def is_private(self) -> bool:
-        return self.visibility != "workspace"
 
     def touch(self) -> Frontmatter:
         return self.model_copy(update={"updated": _now()})
@@ -290,8 +292,10 @@ def is_visibility(value: str) -> bool:
     """Whether `value` is a scope a memory may legitimately carry.
 
     The same check `Frontmatter` runs, exposed for the callers that hold a
-    scope from somewhere else — a session row, a tool argument — and need to
-    know it is writable *before* building a document around it.
+    scope from somewhere else and need to know it is writable *before* building
+    a document around it. The older narrower forms still parse, because the
+    corpus contains files written before #265 and a memory that cannot be read
+    is worse than one carrying a scope nothing enforces.
     """
     return bool(_VISIBILITY.match(value))
 

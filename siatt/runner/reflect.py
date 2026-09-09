@@ -5,9 +5,8 @@ a memory that only ever accumulates becomes an archive nobody can find anything
 in. This is the counterweight, and it does three things a night.
 
 **It writes the day down.** `journal/YYYY/MM/DD.md` is a digest of what was
-talked about, built from the day's episode summaries. Workspace-scoped
-summaries only: the journal is a file in a repo the whole workspace can read,
-and a DM summarized into it is a private conversation published.
+talked about, built from the day's episode summaries — every conversation of
+that day, wherever it happened, because they are all the same person's (#265).
 
 **It recomputes salience.** Every memory decays; one that was actually recalled
 into a conversation is boosted. That is the number `forget` (#34) will read, so
@@ -63,8 +62,8 @@ JOB = "reflect"
 #: the budget would spend a night's whole allowance on rows that write nothing.
 _FEEDBACK_SLACK = 4
 
-#: The journal is a workspace document. Every other scope is deliberately
-#: absent from it — see the module docstring.
+#: What every memory this job writes is stamped with. One person, one pool, so
+#: there is only ever this one value — see `siatt/memory/schema.py`.
 JOURNAL_SCOPE = "workspace"
 
 UNTRUSTED_NOTE = """The material arrives inside a nonce-delimited UNTRUSTED DATA
@@ -197,7 +196,7 @@ class Reflector:
         # just ended.
         day = (moment - timedelta(days=1)).date()
         episodes = await self._store.episode_summaries(
-            since=_start_of(day), until=_start_of(day + timedelta(days=1)), scope=JOURNAL_SCOPE
+            since=_start_of(day), until=_start_of(day + timedelta(days=1))
         )
 
         manifest = self._memory.manifest()
@@ -411,14 +410,14 @@ class Reflector:
     async def _contradictions(self, manifest: Manifest) -> list[Conflict]:
         """Memories that cannot both be true, surfaced and left alone.
 
-        Workspace-scoped only, and for the same reason the journal is: what
-        this finds is written into a file and posted to a channel.
+        The journal itself is excluded: a day's digest restates what the
+        memories of that day already say, and a contradiction between a memory
+        and the record of the conversation it came from is not news.
         """
         candidates = [
             entry
             for entry in manifest.memories.values()
-            if entry.visibility == JOURNAL_SCOPE
-            and not entry.path.startswith(f"{MEMORY_DIR}/journal/")
+            if not entry.path.startswith(f"{MEMORY_DIR}/journal/")
         ]
         recent = sorted(candidates, key=lambda e: e.last_touched, reverse=True)[
             : self._settings.max_conflict_candidates

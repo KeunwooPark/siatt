@@ -1,4 +1,4 @@
-"""Hybrid retrieval: query, candidates, fusion, scope filter, pack.
+"""Hybrid retrieval: query, candidates, fusion, pack.
 
 The lexical half remains good enough to be useful on its own, because a memory
 system that only works once embeddings are configured is a memory system that
@@ -12,11 +12,11 @@ That gap is the case for #31 rather than for a bigger stopword list.
 
 Two things here are not merely engineering preferences:
 
-**The scope filter runs in SQL, before ranking.** Not after fusion, not during
-packing. A memory the requester may not see must never enter the ranked pool at
-all, because every later step is a place somebody could forget to re-check. The
-one exception is `explain=True`, which re-runs the query unfiltered purely to
-report what was excluded — and marks those rows so they cannot be packed.
+**There is one pool.** Siatt serves one person, so there is no second
+audience to keep a memory from and nothing here filters on who is asking. The
+`scope` a chunk carries is recorded, not enforced: a fact learned in one channel
+answers a question asked in another, which is the whole point of it being one
+person's memory rather than one channel's (#265).
 
 **Every step is recorded.** Retrieval you cannot debug is retrieval you cannot
 improve, and essentially every complaint about this system will arrive as "why
@@ -247,8 +247,6 @@ class Candidate:
     fused: float = 0.0
     recency: float = 1.0
     final: float = 0.0
-    #: Set only on candidates surfaced by `explain`, which are never packed.
-    denied: str | None = None
 
     @property
     def sources(self) -> tuple[str, ...]:
@@ -272,12 +270,10 @@ class RetrievalTrace:
     question: str
     query: str
     rewritten: bool
-    scope: str
     match_expression: str
     #: Absolute date phrases a relative word in the question resolved to.
     dates: list[str] = field(default_factory=list)
     candidates: list[Candidate] = field(default_factory=list)
-    denied: list[Candidate] = field(default_factory=list)
     kept: list[Candidate] = field(default_factory=list)
     budget_tokens: int = 0
     used_tokens: int = 0
@@ -298,17 +294,6 @@ class Retrieval:
     @property
     def memory_ids(self) -> list[str]:
         return [c.memory_id for c in self.kept]
-
-
-def permits(requester_scope: str, memory_scope: str) -> bool:
-    """Whether a session in `requester_scope` may see a memory in `memory_scope`.
-
-    Workspace memories are visible everywhere; anything narrower is visible only
-    from inside exactly that scope. The number-one failure mode of a shared
-    memory is repeating something from a DM in a public channel, so this errs
-    towards refusing.
-    """
-    return memory_scope == "workspace" or memory_scope == requester_scope
 
 
 def is_self_contained(message: str) -> bool:
@@ -407,9 +392,7 @@ class Retriever:
         self,
         question: str,
         *,
-        scope: str = "workspace",
         recent: Sequence[str] = (),
-        explain: bool = False,
         include_pinned: bool = True,
         limit: int | None = None,
         tz: str | tzinfo | None = None,
@@ -456,14 +439,13 @@ class Retriever:
             question=question,
             query=query,
             rewritten=rewritten,
-            scope=scope,
             match_expression=match,
             dates=phrases,
             budget_tokens=self._budget,
         )
 
-        candidates = await self._candidates(query, match, scope)
-        pinned = await self._pinned(scope) if include_pinned else []
+        candidates = await self._candidates(query, match)
+        pinned = await self._pinned() if include_pinned else []
         merged = [self._redact(c) for c in _merge(candidates + pinned)]
         for candidate in merged:
             trace.candidates.append(candidate)
@@ -476,8 +458,6 @@ class Retriever:
             ranked.sort(key=lambda c: (order.get(c.chunk_id, len(order)), -c.final))
             trace.reranked = True
         trace.candidates = ranked
-        if explain:
-            trace.denied = await self._denied(match, scope)
 
         retrieval = self._pack(
             ranked,
@@ -513,12 +493,10 @@ class Retriever:
 
     # -- candidates ----------------------------------------------------------
 
-    async def _candidates(self, query: str, match: str, scope: str) -> list[Candidate]:
-        lexical = self._match(match, scope, header_only=False) if match else _empty_rows()
-        headers = self._match(match, scope, header_only=True) if match else _empty_rows()
-        body, header, vector = await asyncio.gather(
-            lexical, headers, self._vector_match(query, scope)
-        )
+    async def _candidates(self, query: str, match: str) -> list[Candidate]:
+        lexical = self._match(match, header_only=False) if match else _empty_rows()
+        headers = self._match(match, header_only=True) if match else _empty_rows()
+        body, header, vector = await asyncio.gather(lexical, headers, self._vector_match(query))
 
         found: dict[str, Candidate] = {}
         for rank, row in enumerate(body, start=1):
@@ -526,14 +504,12 @@ class Retriever:
                 row, lexical_rank=rank, bm25=float(str(row["score"]))
             )
         for rank, row in enumerate(header, start=1):
-            await self._carry_header_rank(found, row, rank, scope)
+            await self._carry_header_rank(found, row, rank)
         for rank, row in enumerate(vector, start=1):
-            await self._carry_vector_rank(found, row, rank, scope)
+            await self._carry_vector_rank(found, row, rank)
         return [self._score(c) for c in found.values()]
 
-    async def _carry_vector_rank(
-        self, found: dict[str, Candidate], row: Row, rank: int, scope: str
-    ) -> None:
+    async def _carry_vector_rank(self, found: dict[str, Candidate], row: Row, rank: int) -> None:
         """Keep locator/header embeddings from displacing a memory's prose."""
         distance = float(str(row["distance"]))
         if int(str(row["ordinal"])) == 0:
@@ -547,7 +523,7 @@ class Retriever:
                             body, vector_rank=rank, vector_distance=distance
                         )
                 return
-            lead = await self._lead_body(str(row["memory_id"]), scope)
+            lead = await self._lead_body(str(row["memory_id"]))
             if lead is not None:
                 row = lead
         chunk_id = str(row["id"])
@@ -556,7 +532,7 @@ class Retriever:
             _merge((found[chunk_id], candidate))[0] if chunk_id in found else candidate
         )
 
-    async def _vector_match(self, query: str, scope: str) -> list[Row]:
+    async def _vector_match(self, query: str) -> list[Row]:
         if self._embedder is None or self._embedding_model is None:
             return []
         await self._store.enable_vectors()
@@ -573,24 +549,20 @@ class Retriever:
         if not re.fullmatch(r"chunks_vec_[0-9a-f]{16}", table):
             return []
         blob = struct.pack(f"{len(vectors[0])}f", *vectors[0])
-        scopes = ["workspace"] if scope == "workspace" else ["workspace", scope]
-        rows: list[Row] = []
-        for allowed in scopes:
-            rows.extend(
-                await self._store.raw(
-                    f"SELECT c.id, c.memory_id, c.path, c.ordinal, c.text, c.scope,"
-                    f" c.salience, c.pinned, c.updated_at, v.distance"
-                    f" FROM {table} v JOIN chunks c ON c.id = v.chunk_id"
-                    f" WHERE v.embedding MATCH ? AND k = ? AND v.scope = ?"
-                    f" ORDER BY v.distance",
-                    (blob, SOURCE_LIMIT, allowed),
-                )
-            )
-        return sorted(rows, key=lambda row: float(str(row["distance"])))[:SOURCE_LIMIT]
+        # One `MATCH` over the whole table. The `scope` column on the vector
+        # index is metadata rather than a partition key, and with nothing to
+        # filter on there is no reason to ask for the partitions separately —
+        # which is also what stops `k` being spent once per scope (#265).
+        return await self._store.raw(
+            f"SELECT c.id, c.memory_id, c.path, c.ordinal, c.text, c.scope,"
+            f" c.salience, c.pinned, c.updated_at, v.distance"
+            f" FROM {table} v JOIN chunks c ON c.id = v.chunk_id"
+            f" WHERE v.embedding MATCH ? AND k = ?"
+            f" ORDER BY v.distance",
+            (blob, SOURCE_LIMIT),
+        )
 
-    async def _carry_header_rank(
-        self, found: dict[str, Candidate], row: Row, rank: int, scope: str
-    ) -> None:
+    async def _carry_header_rank(self, found: dict[str, Candidate], row: Row, rank: int) -> None:
         """Attach a title/tag hit to the memory's prose rather than to itself.
 
         The header chunk is a locator. It exists so that a memory titled "Deploy
@@ -611,65 +583,43 @@ class Retriever:
                 found[candidate.chunk_id] = replace(candidate, header_rank=rank)
             return
 
-        lead = await self._lead_body(memory_id, scope)
+        lead = await self._lead_body(memory_id)
         source = lead if lead is not None else row
         found[str(source["id"])] = _candidate(
             source, header_rank=rank, bm25=float(str(row["score"]))
         )
 
-    async def _match(self, match: str, scope: str, *, header_only: bool) -> list[Row]:
-        # The scope filter is part of the query, not a later pass. A memory the
-        # requester may not see never enters the ranked pool.
+    async def _match(self, match: str, *, header_only: bool) -> list[Row]:
         return await self._store.raw(
             "SELECT c.id, c.memory_id, c.path, c.ordinal, c.text, c.scope, c.salience,"
             "       c.pinned, c.updated_at, bm25(chunks_fts) AS score"
             " FROM chunks_fts f JOIN chunks c ON c.rowid = f.rowid"
             " WHERE chunks_fts MATCH ?"
-            "   AND (c.scope = 'workspace' OR c.scope = ?)"
             + ("   AND c.ordinal = 0" if header_only else "   AND c.ordinal > 0")
             + " ORDER BY score LIMIT ?",
-            (match, scope, SOURCE_LIMIT),
+            (match, SOURCE_LIMIT),
         )
 
-    async def _lead_body(self, memory_id: str, scope: str) -> Row | None:
+    async def _lead_body(self, memory_id: str) -> Row | None:
         """The first prose chunk of a memory located by its title or tags."""
         rows = await self._store.raw(
             "SELECT id, memory_id, path, ordinal, text, scope, salience, pinned, updated_at"
             " FROM chunks WHERE memory_id = ? AND ordinal > 0"
-            "   AND (scope = 'workspace' OR scope = ?)"
             " ORDER BY ordinal LIMIT 1",
-            (memory_id, scope),
+            (memory_id,),
         )
         return rows[0] if rows else None
 
-    async def _pinned(self, scope: str) -> list[Candidate]:
+    async def _pinned(self) -> list[Candidate]:
         rows = await self._store.raw(
             "SELECT id, memory_id, path, ordinal, text, scope, salience, pinned, updated_at"
-            " FROM chunks WHERE pinned = 1 AND (scope = 'workspace' OR scope = ?)"
+            " FROM chunks WHERE pinned = 1"
             " ORDER BY memory_id, ordinal",
-            (scope,),
         )
         # Pinned chunks all score alike, so packing takes the first one listed.
         # Without this that is always the header, and a standing instruction
         # arrives in every single prompt as its own title.
         return [self._score(_candidate(row)) for row in _prefer_body(rows)]
-
-    async def _denied(self, match: str, scope: str) -> list[Candidate]:
-        """What the scope filter excluded. Explanation only — never packed."""
-        if not match:
-            return []
-        rows = await self._store.raw(
-            "SELECT c.id, c.memory_id, c.path, c.ordinal, c.text, c.scope, c.salience,"
-            "       c.pinned, c.updated_at, bm25(chunks_fts) AS score"
-            " FROM chunks_fts f JOIN chunks c ON c.rowid = f.rowid"
-            " WHERE chunks_fts MATCH ? AND c.scope != 'workspace' AND c.scope != ?"
-            " ORDER BY score LIMIT ?",
-            (match, scope, SOURCE_LIMIT),
-        )
-        return [
-            _candidate(row, denied=f"scope {row['scope']!r} is not visible from {scope!r}")
-            for row in rows
-        ]
 
     # -- scoring -------------------------------------------------------------
 
@@ -782,14 +732,12 @@ class Retriever:
             chosen[candidate.chunk_id] = snippet
             return True
 
-        # `denied is not None` is belt and braces: explanation rows are never
-        # packed.
         if reserve_pinned:
             taken = 0
             for candidate in ranked:
                 if taken >= limit:
                     break
-                if candidate.denied is not None or not candidate.pinned:
+                if not candidate.pinned:
                     continue
                 if candidate.memory_id not in seen and take(candidate):
                     taken += 1
@@ -798,7 +746,7 @@ class Retriever:
         for candidate in ranked:
             if taken >= limit:
                 break
-            if candidate.denied is not None or candidate.memory_id in seen:
+            if candidate.memory_id in seen:
                 continue
             if reserve_pinned and candidate.pinned:
                 # It had its own pass. Letting it take a matched slot as well
@@ -834,7 +782,6 @@ def _candidate(
     bm25: float | None = None,
     vector_rank: int | None = None,
     vector_distance: float | None = None,
-    denied: str | None = None,
 ) -> Candidate:
     return Candidate(
         memory_id=str(row["memory_id"]),
@@ -851,7 +798,6 @@ def _candidate(
         bm25=bm25,
         vector_rank=vector_rank,
         vector_distance=vector_distance,
-        denied=denied,
     )
 
 

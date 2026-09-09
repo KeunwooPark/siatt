@@ -20,10 +20,9 @@ Two rules it shares with `memory_write`, for the same reasons:
   A model that has seen a digest will compose a plausible one, and a digest
   taken on its word is a picture chosen by a hallucination.
 - **What it may name is this conversation's.** Files attached here, plus what a
-  `memory_read` put in front of it this turn — the second scope-checked before
-  it was ever shown. A digest from anywhere else resolves to nothing, because
-  the alternative is a way to post a stranger's photograph into a channel by
-  guessing twelve characters.
+  `memory_read` put in front of it this turn. A digest from anywhere else
+  resolves to nothing, because the alternative is a model posting a file it
+  reached by guessing twelve characters.
 """
 
 from __future__ import annotations
@@ -111,11 +110,10 @@ def _send_tool(store: Store, attachments: Attachments) -> Tool:
                 # concluding the first call failed and asking again.
                 lines.append(f"- {chosen[sha]} — already going out with this answer")
                 continue
-            held = await attachments.get(sha, scope=context.scope)
+            held = await attachments.get(sha)
             if held is None:
-                # Between the listing and here: collected, or never visible
-                # from this scope in the first place. Either way there are no
-                # bytes to send and the model should not say there were.
+                # Collected between the listing and here. There are no bytes
+                # to send, and the model should not say there were.
                 lines.append(f"- {chosen[sha]} — no longer stored, and not sent")
                 continue
             context.outgoing.append(sha)
@@ -159,12 +157,11 @@ def _send_tool(store: Store, attachments: Attachments) -> Tool:
 async def _sendable(store: Store, attachments: Attachments, context: ToolContext) -> dict[str, str]:
     """Every file this turn may send, by digest, with what to call it.
 
-    Two sets, and the union is the whole permission model. The conversation's
-    own attachments are `memory_write`'s rule (`_cited`), scoped in the query.
-    The blobs a `memory_read` surfaced this turn are the reason the feature is
-    worth having — "send me the photo from that memory" — and they are safe on
-    somebody else's check: `_shows` resolved each one under this scope before it
-    was ever put in front of the model.
+    Two sets, and the union is what the model may name. The conversation's own
+    attachments are `memory_write`'s rule (`_cited`). The blobs a `memory_read`
+    surfaced this turn are the reason the feature is worth having — "send me the
+    photo from that memory" — and `_shows` resolved each one before it was ever
+    put in front of the model.
 
     The name always comes off the row. What the surface called the file is a
     fact about the upload; what the model calls it is a guess.
@@ -174,12 +171,12 @@ async def _sendable(store: Store, attachments: Attachments, context: ToolContext
     be sent again; what it may not do is become a citation in the corpus, which
     is `citable`'s business and not this one.
     """
-    rows = await store.attachments_for_session(context.session_id, scope=context.scope)
+    rows = await store.attachments_for_session(context.session_id)
     known = named(rows)
     for sha in context.surfaced:
         if sha in known:
             continue
-        held = await attachments.get(sha, scope=context.scope)
+        held = await attachments.get(sha)
         if held is not None:
             known.update(named([{"sha256": sha, "name": held.name, "mime": held.mime}]))
     return known

@@ -603,13 +603,10 @@ async def test_a_configured_destination_is_resolved_from_config_at_fire_time(
     assert event.reply_to is None
 
 
-async def test_a_firing_carries_the_scope_of_where_it_lands_not_of_who_asked(
-    store: Store,
-) -> None:
-    """The whole security claim of a destination (§11.1). A task set up in a DM
-    and pointed at a channel by the operator must not take the DM's scope with
-    it — retrieval filters on this before it ranks, so a private scope arriving
-    in a public channel is the leak, not a symptom of one."""
+async def test_a_firing_lands_in_the_destination_channel(store: Store) -> None:
+    """A destination says where the answers go. `channel` on the event is what
+    carries that, and it is the operator's config that decided it — nothing
+    arriving in a conversation can name one."""
     settings = TaskSettings(destinations={"ai-news": "C0AI"})
     task = await Tasks(store, settings).create(
         owner="U01",
@@ -617,7 +614,6 @@ async def test_a_firing_carries_the_scope_of_where_it_lands_not_of_who_asked(
         session_id="slack:T01:D0999:1756890000.123",
         channel="D0999",
         reply_to="1756890000.123",
-        scope="private:U01",
         prompt="what happened in AI overnight",
         cron=WEEKDAY_NINE,
         destination="ai-news",
@@ -627,8 +623,8 @@ async def test_a_firing_carries_the_scope_of_where_it_lands_not_of_who_asked(
     await task_handler(store, settings)(a_job(task, task.next_fires(1, now=NOW)[0]))
 
     (event,) = await events(store)
-    assert event.scope == "channel:C0AI"
-    assert "private" not in event.scope
+    assert event.channel == "C0AI"
+    assert event.reply_to is None, "a firing starts its own thread"
 
 
 async def test_the_creating_thread_is_still_where_its_owner_is_told(store: Store) -> None:

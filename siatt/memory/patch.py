@@ -273,7 +273,6 @@ class PatchCompiler:
             frontmatter = type(doc.frontmatter).model_validate(fields)
         except Exception as exc:
             raise PatchError([Rejection(_first_line(exc), index)]) from exc
-        self._require_no_widening(doc.frontmatter.visibility, frontmatter.visibility, index)
 
         updated = MemoryDoc(
             frontmatter=frontmatter if _is_bookkeeping(patch) else frontmatter.touch(),
@@ -290,21 +289,11 @@ class PatchCompiler:
             raise PatchError([Rejection(f"cannot merge {patch.into} into itself", index)])
 
         path, target = self._load(patch.into, index, projected)
-        sources = [self._load(source, index, projected) for source in patch.from_ids]
-
-        scopes = {doc.frontmatter.visibility for _, doc in sources} | {
-            target.frontmatter.visibility
-        }
-        if len(scopes) > 1:
-            # Merging a DM-scoped memory into a workspace one is how a private
-            # conversation ends up quoted in a public channel.
-            raise PatchError(
-                [
-                    Rejection(
-                        f"cannot merge memories with different visibility: {sorted(scopes)}", index
-                    )
-                ]
-            )
+        # Loaded for the check rather than for the content: a merge whose
+        # sources do not all exist must be rejected before anything is written,
+        # and the bodies themselves are the model's to have already read.
+        for source in patch.from_ids:
+            self._load(source, index, projected)
 
         merged = MemoryDoc(
             frontmatter=target.frontmatter.model_copy(
@@ -323,15 +312,9 @@ class PatchCompiler:
         return changes
 
     def _supersede(self, patch: Supersede, index: int, projected: Manifest) -> list[Change]:
-        _, old = self._load(patch.old_id, index, projected)
-        # The successor makes the same claim as the memory it replaces, so it
-        # inherits the same audience. Without this a `private:` note can be
-        # restated as a `workspace` one and archived out of sight — which is
-        # the same leak `_update` and `_merge` already refuse, taking the
-        # scenic route.
-        self._require_no_widening(
-            old.frontmatter.visibility, patch.new.frontmatter.visibility, index
-        )
+        # Loaded so that superseding a memory that is not there is a rejection
+        # rather than a successor pointing at nothing.
+        self._load(patch.old_id, index, projected)
         successor = patch.new.model_copy(
             update={
                 "frontmatter": patch.new.frontmatter.model_copy(
@@ -540,19 +523,6 @@ class PatchCompiler:
                 ]
             )
 
-    def _require_no_widening(self, before: str, after: str, index: int) -> None:
-        if before == after or before == "workspace":
-            return
-        raise PatchError(
-            [
-                Rejection(
-                    f"visibility may not change from {before!r} to {after!r}; "
-                    "a memory's scope is inherited, never widened",
-                    index,
-                )
-            ]
-        )
-
     def _exists(self, path: str) -> bool:
         return (self._root / path).exists()
 
@@ -564,7 +534,12 @@ class PatchCompiler:
 #: scores recency on, the age salience itself decays from, and the age the
 #: retention floor measures, so a nightly rescore would make the whole corpus
 #: permanently new and nothing would ever be forgettable again.
-_DERIVED = frozenset({"salience"})
+#:
+#: `visibility` joined it for the same reason once #265 left it with one value:
+#: normalizing a field nothing reads is not a change to what a memory claims,
+#: and `siatt rescope` rewriting fifty files would otherwise make every one of
+#: them the newest thing in the corpus.
+_DERIVED = frozenset({"salience", "visibility"})
 
 
 def _is_bookkeeping(patch: Update) -> bool:

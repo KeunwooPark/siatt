@@ -201,11 +201,8 @@ class Runtime:
                 turn.event.text,
                 surface=turn.event.source,
                 author=turn.event.author,
-                # The session's scope, not the event's. They are derived the
-                # same way and normally agree; when they do not, the record of
-                # what this conversation has been under all along is the one to
-                # trust, and an event cannot widen a session that was opened as
-                # private.
+                # The session's, not the event's: the row is the record of
+                # what this conversation has been all along.
                 scope=turn.session.scope,
                 on_delta=reply.delta,
                 # So a later edit or deletion of this message can find what was
@@ -222,14 +219,13 @@ class Runtime:
                 channel=turn.event.channel,
                 reply_to=turn.event.reply_to,
                 # The author's zone, which decides what "yesterday" in their
-                # message means (#223). The event's and not the session's:
-                # unlike scope, this is a property of whoever spoke just now,
-                # and a thread can carry people in different zones.
+                # message means (#223). The event's and not the session's: it
+                # is a property of whoever spoke just now.
                 tz=turn.event.tz,
                 # What the preparer managed to store. Hashes, not bytes: the
-                # agent reads them back through the attachment store, under the
-                # scope above, and a descriptor the fetch did not keep carries
-                # none and contributes nothing.
+                # agent reads them back through the attachment store, and a
+                # descriptor the fetch did not keep carries none and
+                # contributes nothing.
                 attachments=[a.sha256 for a in turn.event.attachments if a.sha256],
                 can_send_files=self._sends_files,
                 sends_messages=self._sends_messages,

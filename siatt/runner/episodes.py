@@ -14,10 +14,6 @@ the extractor's output is a list of claims, validated against a schema, and a
 claim is not an instruction anybody acts on. Nothing here can write a file, and
 `promote` — which can — never sees this text.
 
-**Scope is inherited.** An observation's visibility comes from the session row,
-never from the model. A conversation held in a DM produces private
-observations, whatever the model would prefer.
-
 **Most conversations are not worth extracting from.** Every closed episode is
 scored — "did anything worth remembering happen here?" — and one below the
 threshold closes with its summary and no observations, so it never reaches
@@ -334,7 +330,7 @@ class EpisodeCloser:
         reason: an extraction may cite a file that was sent in the conversation
         it is reading, and a handle from anywhere else resolves to nothing.
         """
-        return citable(await self._store.attachments_for_session(session_id, scope=scope))
+        return citable(await self._store.attachments_for_session(session_id))
 
     async def _extract(
         self,

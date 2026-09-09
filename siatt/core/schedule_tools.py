@@ -20,7 +20,7 @@ work under.
 turn built from the event. There is no argument for where a task posts, so no
 instruction smuggled into text Siatt read can create one that posts anywhere but
 the conversation it was created in. A task created in a DM stays in the DM
-(§11.1).
+(§7.1).
 
 `new_thread` is not an exception to that, and the distinction is worth being
 exact about because it is the one an injected instruction would try to blur. It
@@ -218,7 +218,7 @@ async def _visible(tasks: Tasks, context: ToolContext) -> list[Task]:
     can reach. `owner` still bounds it to the asker's own, and a channel is
     where these words were already said and where the answer is about to be
     posted — the same one place `schedule_create` can reach, and the same
-    argument §11.1 makes about it. A DM's channel is the DM, so a DM lists the
+    argument §7.1 makes about it. A DM's channel is the DM, so a DM lists the
     DM's. What text arriving in one channel still cannot do is enumerate
     another channel's schedules, which is what §7.1 is about.
 

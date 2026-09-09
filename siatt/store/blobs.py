@@ -1,4 +1,4 @@
-"""Bytes on disk, and the scope that says who may ask for them.
+"""Bytes on disk, and the arrivals that point at them.
 
 Two things live here because they are two halves of one guarantee.
 
@@ -7,11 +7,10 @@ temporary name and renamed into place, with a cap enforced on the way past
 rather than after arrival. It knows nothing about conversations, sessions or
 visibility, and it should not -- given a hash it will hand back bytes.
 
-`Attachments` is the half that knows who is asking. Every read it offers takes
-a scope and refuses what that scope may not see, and a blob is only reachable
-through it. The database is where visibility is decided (`attachment_refs`),
-so the composition is the point: a caller holding only a `BlobStore` can read
-anything, and no caller outside this module is given one.
+`Attachments` is the half that knows what a blob *is*: its mime type, its
+dimensions, the name it arrived under, and whether anything still points at it.
+A blob is only reachable through it, and no caller outside this module is given
+a `BlobStore`, so `collect` can be the one place that decides bytes are gone.
 """
 
 from __future__ import annotations
@@ -80,7 +79,7 @@ class Reclaimed:
 
 @dataclass(frozen=True, slots=True)
 class Attachment:
-    """One blob, as seen from a conversation allowed to see it."""
+    """One blob, as a conversation sees it."""
 
     sha256: str
     mime: str
@@ -223,13 +222,11 @@ class BlobStore:
 
 
 class Attachments:
-    """Blob and row together, with a scope on every way out.
+    """Blob and row together.
 
     The only route to an attachment's bytes. `put` writes the file and the rows
-    in an order that survives a crash between them, and every read takes the
-    scope of whoever is asking and applies the same rule retrieval applies to a
-    memory: workspace is visible everywhere, anything narrower only from inside
-    itself.
+    in an order that survives a crash between them, and a read is refused only
+    when nothing points at the blob any more.
     """
 
     def __init__(
@@ -267,8 +264,8 @@ class Attachments:
 
         Idempotent on content: the same file twice writes one blob and one row
         in `attachments`. It is *not* idempotent on arrival unless the caller
-        gives an `external_id` -- two people sending the same picture are two
-        refs, because they are two arrivals with two scopes.
+        gives an `external_id` -- the same picture sent twice is two refs,
+        because it is two arrivals with two names and two times.
 
         The blob is written before the rows. The other order would leave a row
         promising bytes that are not there, which every reader would have to
@@ -304,23 +301,23 @@ class Attachments:
         )
         return blob.sha256
 
-    async def get(self, sha256: str, *, scope: str) -> Attachment | None:
-        row = await self._store.attachment(sha256, scope=scope)
+    async def get(self, sha256: str) -> Attachment | None:
+        row = await self._store.attachment(sha256)
         return _attachment(row) if row else None
 
-    async def read(self, sha256: str, *, scope: str) -> bytes:
-        """The bytes, if `scope` is allowed to have them.
+    async def read(self, sha256: str) -> bytes:
+        """The bytes, if the store still holds them.
 
-        The permission check is a database read before a filesystem read, and
-        not the other way around: the answer to "may I see this" must not depend
-        on whether the file happens to be there.
+        The row is read before the file, and not the other way around: a blob
+        the collector has taken should read as gone rather than as a bare
+        `FileNotFoundError` from somewhere further down.
         """
-        if await self._store.attachment(sha256, scope=scope) is None:
-            raise AttachmentError(f"attachment {sha256[:12]} is not visible from {scope}")
+        if await self._store.attachment(sha256) is None:
+            raise AttachmentError(f"attachment {sha256[:12]} is not in the store")
         return await self._blobs.read(sha256)
 
-    async def path(self, sha256: str, *, scope: str) -> Path:
-        """Where the bytes are, if `scope` is allowed to have them.
+    async def path(self, sha256: str) -> Path:
+        """Where the bytes are, if the store still holds them.
 
         For the surface whose way of handing somebody a file is to say where it
         already is. In a terminal the person asking and the process answering
@@ -328,21 +325,19 @@ class Attachments:
         copy into their working directory would be a file they did not ask for,
         under a name a stranger chose.
 
-        The same order as `read`, for the same reason: whether a conversation
-        may see a blob is a question for the database, and it must not depend on
-        whether the file happens to be there. And the same refusal when it is
-        not -- a path to a file the collector has taken is worse than the
-        sentence saying it is gone.
+        The same order as `read`, and the same refusal when the file is gone: a
+        path to a file the collector has taken is worse than the sentence saying
+        it is gone.
         """
-        if await self._store.attachment(sha256, scope=scope) is None:
-            raise AttachmentError(f"attachment {sha256[:12]} is not visible from {scope}")
+        if await self._store.attachment(sha256) is None:
+            raise AttachmentError(f"attachment {sha256[:12]} is not in the store")
         path = self._blobs.path(sha256)
         if not await asyncio.to_thread(path.exists):
             raise AttachmentError(f"attachment {sha256[:12]} is no longer on disk")
         return path
 
-    async def for_message(self, message_id: str, *, scope: str) -> list[Attachment]:
-        rows = await self._store.attachments_for_message(message_id, scope=scope)
+    async def for_message(self, message_id: str) -> list[Attachment]:
+        rows = await self._store.attachments_for_message(message_id)
         return [_attachment(row) for row in rows]
 
     async def collect(
