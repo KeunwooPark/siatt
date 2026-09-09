@@ -160,7 +160,7 @@ async def test_a_duplicate_memory_id_does_not_take_the_reindex_job_down(
     nothing indexed at all. It is one file's problem, and the run has to say so
     and finish."""
     doc = MemoryDoc.new(type="fact", title="News", body="Every morning at 8.")
-    for relative in ("memory/archive/news.md", "memory/facts/news.md"):
+    for relative in ("memory/facts/news.md", "memory/topics/news.md"):
         target = clone / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(doc.render())
@@ -172,7 +172,7 @@ async def test_a_duplicate_memory_id_does_not_take_the_reindex_job_down(
     assert row["state"] == "done", row["last_error"]
     indexed = await store.raw("SELECT DISTINCT path FROM chunks ORDER BY path")
     assert [str(r["path"]) for r in indexed] == [
-        "memory/archive/news.md",
+        "memory/facts/news.md",
         "memory/people/jane.md",
     ], "the rest of the corpus indexed"
 

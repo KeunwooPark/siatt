@@ -357,7 +357,7 @@ def test_a_duplicate_id_is_named_with_the_file_that_owns_it(rig: tuple[Path, Pat
     config, clone = rig
     bootstrap(clone)
     doc = MemoryDoc.new(type="fact", title="News", body="Every morning at 8.")
-    for relative in ("memory/archive/news.md", "memory/facts/news.md"):
+    for relative in ("memory/facts/news.md", "memory/topics/news.md"):
         target = clone / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(doc.render())
@@ -367,10 +367,10 @@ def test_a_duplicate_id_is_named_with_the_file_that_owns_it(rig: tuple[Path, Pat
     result = runner.invoke(app, ["reindex", "--config", str(config)])
 
     assert result.exit_code == 0, result.output
-    named = [line for line in result.output.splitlines() if "memory/facts/news.md" in line]
+    named = [line for line in result.output.splitlines() if "memory/topics/news.md" in line]
     assert len(named) == 1, f"one line per file, got:\n{result.output}"
     assert doc.id in named[0]
-    assert "memory/archive/news.md" in named[0]
+    assert "memory/facts/news.md" in named[0]
 
 
 def test_the_log_record_names_the_file_once_too(

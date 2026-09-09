@@ -336,7 +336,7 @@ async def test_a_duplicate_id_is_not_reported_as_staleness_either(
     Both halves have to name the same file: the manifest refuses it, and so
     does the index."""
     doc = MemoryDoc.new(type="fact", title="News", body="Every morning at 8.")
-    for relative in ("memory/archive/news.md", "memory/facts/news.md"):
+    for relative in ("memory/facts/news.md", "memory/topics/news.md"):
         target = clone / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(doc.render())
@@ -348,9 +348,9 @@ async def test_a_duplicate_id_is_not_reported_as_staleness_either(
 
     assert status_of(report, "index freshness") is Status.WARN
     assert "run `siatt reindex`" not in detail, "it has, and it cannot fix this"
-    assert "memory/facts/news.md" in detail
+    assert "memory/topics/news.md" in detail
     assert "cannot be indexed" in detail
-    assert "memory/facts/news.md" in detail_of(report, "manifest")
+    assert "memory/topics/news.md" in detail_of(report, "manifest")
 
 
 async def test_a_clean_index_says_what_it_holds(tmp_path: Path, clone: Path) -> None:

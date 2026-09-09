@@ -60,3 +60,16 @@ def is_memory_path(relative_path: str | Path) -> bool:
     if path.parts[:1] != (MEMORY_DIR,):
         return False
     return not is_machinery(path) and path.suffix == ".md"
+
+
+def is_archived(relative_path: str | Path) -> bool:
+    """True for a memory that has been soft-deleted into `memory/archive/`.
+
+    A separate question from `is_memory_path`, which asks where a document may
+    legitimately live: an archived memory is still a memory and is still
+    writable — `forget` moves files in, `patch.py` archives the sources of a
+    merge — so the write path must keep saying yes to it. What the archive means
+    is that nothing should go looking for it any more, which is a question only
+    the readers ask.
+    """
+    return Path(relative_path).as_posix().startswith(f"{ARCHIVE_DIR}/")
