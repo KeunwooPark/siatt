@@ -740,17 +740,87 @@ async def test_recency_decays(tmp_path: Path, store: Store, tokenizer: Tokenizer
     assert ids.index(fresh.id) < ids.index(old.id)
 
 
-async def test_results_are_deduped_by_memory(
+async def test_every_memory_is_offered_a_slot_before_any_file_gets_a_second(
     tmp_path: Path, store: Store, tokenizer: Tokenizer
 ) -> None:
-    """Two chunks of one file would crowd out a second opinion."""
+    """Width before depth. A file with four matching sections must not take
+    four of the slots while a second opinion never gets one."""
     bootstrap(tmp_path)
     body = "\n\n".join(f"## Section {i}\n\ndeploy pipeline detail " + "x" * 300 for i in range(4))
-    doc = write(tmp_path, MemoryDoc.new(type="topic", title="Deploys", body=body))
+    long = write(tmp_path, MemoryDoc.new(type="topic", title="Deploys", body=body))
+    other = write(
+        tmp_path,
+        MemoryDoc.new(type="person", title="Jane", body="Jane owns the deploy pipeline."),
+    )
     await MemoryIndex(store, tmp_path).reindex()
 
-    retrieval = await retriever(store, tokenizer).retrieve("deploy pipeline")
-    assert retrieval.memory_ids.count(doc.id) == 1
+    ids = (await retriever(store, tokenizer, limit=2).retrieve("deploy pipeline")).memory_ids
+
+    assert set(ids) == {long.id, other.id}, "the second opinion still got a slot"
+
+
+#: A memory `promote` has updated: the spec as it was written, and below it the
+#: paragraph that changed part of it. Long enough to be cut in two, because
+#: `split_body` only reaches for paragraphs once a section passes
+#: `MAX_CHUNK_CHARS` — which is the shape the real one had.
+SPEC = (
+    "The diary poster is a vertical 4:5 white paper canvas with wide margins. "
+    "The top block is a typewriter text block: slab-serif monospace with uneven "
+    "ink density, the date on the first line, and the day's sentences running "
+    "together as one paragraph with no sign-off. The bottom block is three "
+    "keywords from that day, each drawn as one ultra-simplified icon, arranged "
+    "in a horizontal row with wide spacing. There are no stamps, no frames, no "
+    "ornaments and no shadows anywhere on the poster. " + "Keep this format. " * 30
+)
+
+CORRECTION = (
+    "Icon style: the default is now a realistic miniature look, a diorama-like "
+    "scale model shot in macro. The icons were originally finalized as a clay "
+    "feel, but that has been superseded and the miniature style is what a new "
+    "poster should use."
+)
+
+
+async def test_a_second_chunk_of_a_packed_memory_is_taken_when_there_is_room(
+    tmp_path: Path, store: Store, tokenizer: Tokenizer
+) -> None:
+    """#273. `promote` writes an update as a new paragraph, so the sentence
+    that corrects a memory is a different chunk from the claim it corrects.
+    Packing one chunk per memory meant the correction was dropped — and the
+    model answered from the half of the file that had been superseded."""
+    bootstrap(tmp_path)
+    doc = write(
+        tmp_path,
+        MemoryDoc.new(
+            type="fact",
+            title="Diary poster format",
+            body=SPEC + "\n\n" + CORRECTION,
+        ),
+    )
+    await MemoryIndex(store, tmp_path).reindex()
+
+    retrieval = await retriever(store, tokenizer).retrieve("diary poster icon style")
+
+    injected = "\n".join(retrieval.snippets)
+    assert "realistic miniature look" in injected, "the correction reached the prompt"
+    assert "typewriter text block" in injected, "and so did the claim it corrects"
+    assert retrieval.memory_ids.count(doc.id) == 2
+
+
+async def test_depth_cannot_outnumber_the_memories_that_ranked(
+    tmp_path: Path, store: Store, tokenizer: Tokenizer
+) -> None:
+    """The second pass has its own allowance, the way pinned does, so the
+    prompt keeps a predictable shape however many sections one file has."""
+    bootstrap(tmp_path)
+    body = "\n\n".join(f"## Section {i}\n\ndeploy pipeline detail " + "x" * 300 for i in range(8))
+    write(tmp_path, MemoryDoc.new(type="topic", title="Deploys", body=body))
+    await MemoryIndex(store, tmp_path).reindex()
+
+    retrieval = await retriever(store, tokenizer, limit=2).retrieve("deploy pipeline")
+
+    assert len(set(retrieval.memory_ids)) <= 2, "still two memories"
+    assert len(retrieval.snippets) <= 4, "and at most one extra chunk each"
 
 
 async def test_a_title_hit_injects_the_body_not_the_title(
@@ -895,7 +965,10 @@ async def test_the_result_limit_is_respected(
 ) -> None:
     search = retriever(store, tokenizer, limit=2)
     retrieval = await search.retrieve("deploy pipeline rota review postgres billing")
-    assert len(retrieval.memory_ids) <= 2
+    # Memories, not chunks: `limit` has always been stated in memories, and
+    # since #273 a memory already packed may send a second chunk against the
+    # depth allowance rather than against this one.
+    assert len(set(retrieval.memory_ids)) <= 2
 
 
 async def test_snippets_carry_the_memory_id_so_the_agent_can_read_more(

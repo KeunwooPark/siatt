@@ -712,6 +712,11 @@ class Retriever:
         is a result like any other and competes for the caller's `limit` — the
         caller asked what matched, and the pinned block is already in the
         prompt above the answer (#57).
+
+        Three allowances since #273: width, then depth. `limit` counts
+        *memories* — it always has, see `DEFAULT_LIMIT` — so a second chunk of
+        a memory already packed is not a second result, and the pass that takes
+        one runs only after every memory that ranked has been offered a slot.
         """
         result = Retrieval(trace=trace)
         used = 0
@@ -725,9 +730,6 @@ class Retriever:
             if used + cost > self._budget:
                 return False
             used += cost
-            # One chunk per memory. Two chunks of the same file crowd out a
-            # second opinion, and the agent can read the whole file with
-            # `memory_read` when it wants more.
             seen.add(candidate.memory_id)
             chosen[candidate.chunk_id] = snippet
             return True
@@ -742,6 +744,8 @@ class Retriever:
                 if candidate.memory_id not in seen and take(candidate):
                     taken += 1
 
+        # Width: one chunk per memory, so that one file cannot crowd out a
+        # second opinion.
         taken = 0
         for candidate in ranked:
             if taken >= limit:
@@ -752,6 +756,28 @@ class Retriever:
                 # It had its own pass. Letting it take a matched slot as well
                 # would starve the answer just as thoroughly as sharing one
                 # bound did — with the eviction running the other way.
+                continue
+            if take(candidate):
+                taken += 1
+
+        # Depth: the chunks those memories did not get to send. Until #273 the
+        # width rule was a cap rather than a first pass, and what it discarded
+        # was corrections — `promote` writes an update as a new paragraph,
+        # `chunk_document` cuts on paragraphs, so the sentence that changed a
+        # memory is a different chunk from the claim it changed. The spec chunk
+        # was packed and the chunk saying the spec had been superseded was
+        # dropped, at rank 2 of the whole corpus, beaten by its own sibling.
+        #
+        # Its own allowance, the way pinned has one: this cannot crowd out a
+        # memory that ranked, because every one of them has already been
+        # offered a slot, and a bound keeps the prompt a predictable shape.
+        taken = 0
+        for candidate in ranked:
+            if taken >= limit:
+                break
+            if candidate.chunk_id in chosen or candidate.memory_id not in seen:
+                continue
+            if reserve_pinned and candidate.pinned:
                 continue
             if take(candidate):
                 taken += 1
