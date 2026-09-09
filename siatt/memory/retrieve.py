@@ -56,6 +56,28 @@ RRF_K = 60
 #: memory is supposed to be long-term; recency breaks ties, it does not rank.
 RECENCY_HALF_LIFE_DAYS = 120.0
 
+#: How much of the score salience is allowed to move.
+#:
+#: Salience used to multiply `fused` outright. It runs from `Decay.floor` to
+#: 1.0, so the tie-breaker decided the ranking — and what it decided on was how
+#: often a memory had been recalled *before*. That is backwards for a memory
+#: written to correct another one: the correction starts at `Decay.base` and
+#: the memory it corrects has been climbing for weeks, so it loses on relevance
+#: it won. It then never packs, never earns a recall, and never climbs (#274).
+#:
+#: What this cannot do is make relevance strictly lead. RRF puts adjacent ranks
+#: about 1.6% apart, so no weight above zero stops salience reordering a
+#: near-tie — and it should not: ordering ties is the job. What the weight
+#: bounds is how far salience can reach past one. At 0.4 it spans 1.6x over the
+#: whole range and about 1.2x over the band an active corpus occupies, which is
+#: less than the gap between memories that genuinely differ in relevance.
+#:
+#: Measured on the corpus that produced #274, over twelve questions with a
+#: known answer: 7/12 packed the right memory at 1.0, 11/12 at 0.4, and nothing
+#: that was packed stopped being packed. 0.2 finds no further wins, so 0.4 is
+#: the smallest change that collects all of them.
+SALIENCE_WEIGHT = 0.4
+
 #: How much a title/tag hit outweighs one buried in prose. The header list is a
 #: separate ranking over a much smaller field, and a memory whose *title* is
 #: about the question is usually the memory that was wanted. Until #41 this
@@ -642,7 +664,7 @@ class Retriever:
             candidate,
             fused=fused,
             recency=recency,
-            final=fused * candidate.salience * recency,
+            final=fused * _weighted(candidate.salience) * recency,
         )
 
     def _recency(self, updated_at: str) -> float:
@@ -794,6 +816,16 @@ class Retriever:
         trace.kept = result.kept
         trace.used_tokens = used
         return result
+
+
+def _weighted(salience: float) -> float:
+    """Salience, compressed into the band `SALIENCE_WEIGHT` allows it.
+
+    Monotonic and never zero, so the ordering salience imposes is unchanged and
+    a memory nobody has needed in a year is still ranked below one they have —
+    it just cannot outvote the question any more.
+    """
+    return 1.0 - SALIENCE_WEIGHT + SALIENCE_WEIGHT * salience
 
 
 def render_snippet(candidate: Candidate) -> str:

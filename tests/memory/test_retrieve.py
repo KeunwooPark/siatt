@@ -30,6 +30,7 @@ from siatt.memory.retrieve import (
     is_self_contained,
     render_snippet,
 )
+from siatt.memory.salience import Decay
 from siatt.redact import Redactor
 from siatt.store import Store
 
@@ -720,6 +721,45 @@ async def test_salience_breaks_ties(tmp_path: Path, store: Store, tokenizer: Tok
 
     ids = (await retriever(store, tokenizer).retrieve("deploys")).memory_ids
     assert ids.index(sharp.id) < ids.index(dull.id)
+
+
+async def test_relevance_outranks_salience(
+    tmp_path: Path, store: Store, tokenizer: Tokenizer
+) -> None:
+    """#274. Salience multiplied `fused` outright, and `fused` is RRF over three
+    rankings — a narrow spread by construction — so how often a memory had been
+    recalled before decided the ranking.
+
+    The shape that costs something is this one: a memory written to correct
+    another starts at `Decay.base` and the memory it corrects has been climbing
+    for weeks, so the correction loses on relevance it won. It then never packs,
+    never earns a recall, and never climbs.
+    """
+    bootstrap(tmp_path)
+    established = write(
+        tmp_path,
+        MemoryDoc.new(
+            type="fact",
+            title="Deploy pipeline handbook",
+            body="It lives in the team wiki and is updated whenever somebody remembers.",
+            salience=1.0,
+        ),
+    )
+    correction = write(
+        tmp_path,
+        MemoryDoc.new(
+            type="fact",
+            title="Deploy pipeline rollback",
+            body="A failed deploy pipeline rollback is done by hand now, not automatically.",
+            salience=Decay().base,
+        ),
+    )
+    await MemoryIndex(store, tmp_path).reindex()
+
+    question = "is the deploy pipeline rollback manual or automatic"
+    ids = (await retriever(store, tokenizer).retrieve(question)).memory_ids
+
+    assert ids.index(correction.id) < ids.index(established.id)
 
 
 async def test_recency_decays(tmp_path: Path, store: Store, tokenizer: Tokenizer) -> None:
