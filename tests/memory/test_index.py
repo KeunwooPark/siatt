@@ -274,26 +274,81 @@ async def test_the_fts_mirror_stays_in_step_with_the_table(repo: Path, store: St
 
 
 async def test_a_memory_that_moved_keeps_indexing(repo: Path, store: Store) -> None:
-    """Every archive is a move, and the reorganizer moves files every week.
+    """The reorganizer moves files every week.
 
     Chunk ids come from the memory id, not the path, so the new path's insert
     lands on ids the old path still holds. Deleting the files that are gone
     after the writes was too late: the run died on `UNIQUE constraint failed:
     chunks.id` before it got there.
+
+    Between two live directories, because the other kind of move — into the
+    archive — leaves the index rather than following the file (#271).
     """
     index = MemoryIndex(store, repo)
     doc = MemoryDoc.new(type="fact", title="News", body="Every morning at 8.")
-    add(repo, doc, "memory/facts/news.md")
+    add(repo, doc, "memory/topics/news.md")
     await index.reindex()
 
-    (repo / "memory/archive").mkdir(parents=True, exist_ok=True)
-    (repo / "memory/facts/news.md").rename(repo / "memory/archive/news.md")
+    (repo / "memory/facts").mkdir(parents=True, exist_ok=True)
+    (repo / "memory/topics/news.md").rename(repo / "memory/facts/news.md")
     result = await index.reindex()
 
-    assert result.indexed == ["memory/archive/news.md"]
-    assert result.removed == ["memory/facts/news.md"]
+    assert result.indexed == ["memory/facts/news.md"]
+    assert result.removed == ["memory/topics/news.md"]
     assert not result.problems
-    assert {str(row["path"]) for row in await chunks_of(store)} == {"memory/archive/news.md"}
+    assert {str(row["path"]) for row in await chunks_of(store)} == {"memory/facts/news.md"}
+
+
+async def test_an_archived_memory_is_not_indexed(repo: Path, store: Store) -> None:
+    """`forget` archives a memory to take it out of circulation. A chunk in
+    `chunks_fts` is not out of circulation: it is retrieved into prompts, where
+    a superseded fact competes with the one that replaced it (#271)."""
+    add(
+        repo,
+        MemoryDoc.new(type="fact", title="Stamps", body="Poster stamps, up to five."),
+        "memory/archive/poster-stamps.md",
+    )
+    add(repo, MemoryDoc.new(type="fact", title="Icons", body="Poster icons, three of them."))
+
+    result = await MemoryIndex(store, repo).reindex()
+
+    assert "memory/archive/poster-stamps.md" not in result.indexed
+    assert {str(row["path"]) for row in await chunks_of(store)} == {"memory/facts/icons.md"}
+    assert await search(store, "poster") == await search(store, "icons"), "only the live one"
+
+
+async def test_archiving_a_memory_takes_its_chunks_out_of_the_index(
+    repo: Path, store: Store
+) -> None:
+    """The corpus that is already indexed is the one that matters: these rows
+    exist today and have to go without a `--full`. The deletion pass does it for
+    free — a path that stops appearing in the listing is already a removal."""
+    index = MemoryIndex(store, repo)
+    doc = MemoryDoc.new(type="fact", title="Stamps", body="Poster stamps, up to five.")
+    live = add(repo, doc)
+    await index.reindex()
+    assert await search(store, "stamps") == [doc.id]
+
+    (repo / "memory/archive").mkdir(parents=True, exist_ok=True)
+    (repo / live).rename(repo / "memory/archive/stamps.md")
+    result = await index.reindex()
+
+    assert result.removed == [live]
+    assert await chunks_of(store) == []
+    assert await search(store, "stamps") == [], "and it stops being findable"
+
+
+async def test_an_archived_memory_still_resolves_by_id(repo: Path, store: Store) -> None:
+    """Out of retrieval is not out of the repo. `memory_read` goes through the
+    manifest, so following a `supersedes` chain to an archived memory still
+    reads it — which is the whole point of archiving rather than deleting."""
+    doc = MemoryDoc.new(type="fact", title="Stamps", body="Poster stamps, up to five.")
+    add(repo, doc, "memory/archive/poster-stamps.md")
+    await MemoryIndex(store, repo).reindex()
+
+    entry = Manifest.rebuild(repo)[0].resolve(doc.id)
+
+    assert entry is not None and entry.path == "memory/archive/poster-stamps.md"
 
 
 async def test_a_duplicate_id_costs_one_file_and_not_the_index(
@@ -304,19 +359,19 @@ async def test_a_duplicate_id_costs_one_file_and_not_the_index(
     while retrieval went on answering from the index it already had."""
     index = MemoryIndex(store, repo)
     doc = MemoryDoc.new(type="fact", title="News", body="Every morning at 8.")
-    add(repo, doc, "memory/archive/news.md")
     add(repo, doc, "memory/facts/news.md")
+    add(repo, doc, "memory/topics/news.md")
     add(repo, MemoryDoc.new(type="person", title="Jane", body="Owns deploys."))
 
     with caplog.at_level("WARNING"):
         result = await index.reindex()
 
     assert "memory/people/jane.md" in result.indexed
-    assert "memory/archive/news.md" in result.indexed, "the first path by name wins"
-    assert [p.path for p in result.problems] == ["memory/facts/news.md"]
+    assert "memory/facts/news.md" in result.indexed, "the first path by name wins"
+    assert [p.path for p in result.problems] == ["memory/topics/news.md"]
     assert (
         result.problems[0].reason
-        == f"duplicate id {doc.id}, already indexed from memory/archive/news.md"
+        == f"duplicate id {doc.id}, already indexed from memory/facts/news.md"
     )
     assert "duplicate id" in caplog.text
 
@@ -329,13 +384,13 @@ async def test_a_duplicate_id_is_reported_the_same_way_on_every_run(
     skipped as unchanged and never opened."""
     index = MemoryIndex(store, repo)
     doc = MemoryDoc.new(type="fact", title="News", body="Every morning at 8.")
-    add(repo, doc, "memory/archive/news.md")
     add(repo, doc, "memory/facts/news.md")
+    add(repo, doc, "memory/topics/news.md")
 
     for _ in range(3):
         result = await index.reindex()
-        assert [p.path for p in result.problems] == ["memory/facts/news.md"]
-        assert "memory/archive/news.md" in result.indexed + result.skipped
+        assert [p.path for p in result.problems] == ["memory/topics/news.md"]
+        assert "memory/facts/news.md" in result.indexed + result.skipped
 
 
 async def test_a_duplicate_id_is_not_reported_as_staleness(repo: Path, store: Store) -> None:
@@ -343,14 +398,14 @@ async def test_a_duplicate_id_is_not_reported_as_staleness(repo: Path, store: St
     mistake again: a command that has already run and changes nothing."""
     index = MemoryIndex(store, repo)
     doc = MemoryDoc.new(type="fact", title="News", body="Every morning at 8.")
-    add(repo, doc, "memory/archive/news.md")
     add(repo, doc, "memory/facts/news.md")
+    add(repo, doc, "memory/topics/news.md")
     await index.reindex()
 
     fresh = await index.freshness()
 
     assert fresh.stale is False
-    assert fresh.refused == ["memory/facts/news.md"]
+    assert fresh.refused == ["memory/topics/news.md"]
     assert fresh.changed == []
 
 
@@ -361,13 +416,13 @@ async def test_a_duplicate_id_in_a_corpus_that_was_never_indexed_is_seen(
     two files in the same walk rather than against a row already there."""
     index = MemoryIndex(store, repo)
     doc = MemoryDoc.new(type="fact", title="News", body="Every morning at 8.")
-    add(repo, doc, "memory/archive/news.md")
     add(repo, doc, "memory/facts/news.md")
+    add(repo, doc, "memory/topics/news.md")
 
     fresh = await index.freshness()
 
-    assert fresh.refused == ["memory/facts/news.md"]
-    assert fresh.changed == ["memory/archive/news.md"]
+    assert fresh.refused == ["memory/topics/news.md"]
+    assert fresh.changed == ["memory/facts/news.md"]
 
 
 async def test_resolving_a_duplicate_indexes_the_survivor(repo: Path, store: Store) -> None:
@@ -375,16 +430,16 @@ async def test_resolving_a_duplicate_indexes_the_survivor(repo: Path, store: Sto
     the other one up rather than keep refusing it."""
     index = MemoryIndex(store, repo)
     doc = MemoryDoc.new(type="fact", title="News", body="Every morning at 8.")
-    add(repo, doc, "memory/archive/news.md")
     add(repo, doc, "memory/facts/news.md")
+    add(repo, doc, "memory/topics/news.md")
     await index.reindex()
 
-    (repo / "memory/archive/news.md").unlink()
+    (repo / "memory/facts/news.md").unlink()
     result = await index.reindex()
 
-    assert result.indexed == ["memory/facts/news.md"]
+    assert result.indexed == ["memory/topics/news.md"]
     assert not result.problems
-    assert {str(row["path"]) for row in await chunks_of(store)} == {"memory/facts/news.md"}
+    assert {str(row["path"]) for row in await chunks_of(store)} == {"memory/topics/news.md"}
     assert (await index.freshness()).refused == []
 
 
@@ -395,19 +450,19 @@ async def test_a_full_rebuild_refuses_the_same_file(repo: Path, store: Store) ->
     name."""
     index = MemoryIndex(store, repo)
     doc = MemoryDoc.new(type="fact", title="News", body="Every morning at 8.")
-    add(repo, doc, "memory/archive/news.md")
     add(repo, doc, "memory/facts/news.md")
+    add(repo, doc, "memory/topics/news.md")
 
     result = await index.reindex(full=True)
 
-    assert result.indexed == ["memory/archive/news.md"]
-    assert [p.path for p in result.problems] == ["memory/facts/news.md"]
+    assert result.indexed == ["memory/facts/news.md"]
+    assert [p.path for p in result.problems] == ["memory/topics/news.md"]
 
 
 async def test_a_run_that_refuses_a_file_still_reports_it(repo: Path, store: Store) -> None:
     doc = MemoryDoc.new(type="fact", title="News", body="Every morning at 8.")
-    add(repo, doc, "memory/archive/news.md")
     add(repo, doc, "memory/facts/news.md")
+    add(repo, doc, "memory/topics/news.md")
 
     result = await MemoryIndex(store, repo).reindex()
 

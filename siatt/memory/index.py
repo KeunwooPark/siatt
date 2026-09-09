@@ -24,7 +24,7 @@ from pathlib import Path
 
 from siatt.memory.chunk import Chunk, chunk_document
 from siatt.memory.document import MemoryDoc, MemoryError_, Problem, read_memory_bytes
-from siatt.memory.layout import MEMORY_DIR, is_memory_path
+from siatt.memory.layout import MEMORY_DIR, is_archived, is_memory_path
 from siatt.memory.lease import INDEX_LEASE_NAME, INDEX_LOCK_SUFFIX, Lease
 from siatt.store import Store
 
@@ -160,10 +160,18 @@ class MemoryIndex:
         # the insert had already hit `UNIQUE constraint failed: chunks.id` and
         # taken the run down with it. Reading the directory costs one walk
         # either way (#240).
+        # The archive is walked and then dropped. `forget` moves a memory to
+        # `memory/archive/` to take it out of circulation while leaving it
+        # recoverable, and a chunk in `chunks_fts` is not out of circulation:
+        # it is retrieved into prompts, where a superseded fact competes with
+        # the one that replaced it. The filter is here rather than in
+        # `is_memory_path` because that predicate also guards the write path,
+        # and an archived file is legitimately writable (#271).
         listing = [
             (path, relative)
             for path in sorted((self._root / MEMORY_DIR).rglob("*.md"))
             if is_memory_path(relative := path.relative_to(self._root).as_posix())
+            and not is_archived(relative)
         ]
         # Built from the walk rather than as files are read, so an entry that
         # cannot be read is not then treated as deleted — its rows would be
