@@ -46,7 +46,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from siatt.adapters.slack.limits import MAX_TEXT, split
+from siatt.adapters.slack.limits import MAX_BYTES, split
 from siatt.errors import DeliveryRefused, SiattError
 from siatt.llm.types import Delta, MessageStop, TextDelta, ToolUseStart
 
@@ -57,10 +57,14 @@ log = logging.getLogger(__name__)
 #: asks for "roughly 1/sec — never per token" (§10.1).
 DEFAULT_INTERVAL = 1.0
 
-#: How many refusals before intermediate frames are abandoned for this turn.
-#: One is a burst — several turns in one channel painting on the same second —
-#: and worth riding out. A second says the channel is genuinely over budget,
-#: and the useful thing to protect at that point is the final update.
+#: How many *rate limits* before intermediate frames are abandoned for this
+#: turn. One is a burst — several turns in one channel painting on the same
+#: second — and worth riding out. A second says the channel is genuinely over
+#: budget, and the useful thing to protect at that point is the final update.
+#:
+#: A `SlackRefused` is not counted, because counting it would be waiting for a
+#: second answer to a question already answered: the painter stops on the first
+#: one (#264).
 MAX_REFUSALS = 2
 
 #: Attempts at the *final* update, which is the answer rather than a frame. It
@@ -118,7 +122,7 @@ class LiveMessage:
         thread_ts: str | None,
         interval: float = DEFAULT_INTERVAL,
         ts: str | None = None,
-        limit: int = MAX_TEXT,
+        limit: int = MAX_BYTES,
     ) -> None:
         self._poster = poster
         self._channel = channel
@@ -277,6 +281,20 @@ class LiveMessage:
                     log.info("slack is rate limiting %s; showing the answer only", self._channel)
                     return
                 await asyncio.sleep(limit.retry_after)
+            except SlackRefused as refusal:
+                # An answer no repetition changes, so there is nothing to come
+                # back for: the placeholder is gone, or past editing, or saying
+                # something Slack will not take. Left to the generic handler
+                # below this was swallowed at `debug` and retried every second
+                # for the rest of the turn, which is what a long Korean answer
+                # used to do (#264). `finish` still writes the answer, and
+                # `_write_final` is where a refusal of *that* is handled.
+                log.info(
+                    "slack refused a live frame in %s (%s); showing the answer only",
+                    self._channel,
+                    refusal.code or "no code",
+                )
+                return
             except Exception as exc:
                 # One frame, not the answer. The next tick redraws whatever the
                 # message says by then, and `finish` is the write that matters.

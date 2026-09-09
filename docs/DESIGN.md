@@ -1375,7 +1375,10 @@ Details that bite, in rough order of how quickly they will bite:
   them in the message that was being rewritten and the rest under it. The
   ceiling is well below anything Slack documents, because the published 40,000
   is not the only limit that applies and the refusal arrives as an error code
-  rather than as a truncation. A standing task posting into a channel threads
+  rather than as a truncation. **It is counted in UTF-8 bytes**, which is how
+  Slack counts: a Korean answer spends three bytes a character, so a character
+  budget called 2,768 of them comfortable and `chat.update` called the 5,543
+  bytes `msg_too_long` (#264). A standing task posting into a channel threads
   its own parts under the message it just opened, rather than leaving three
   top-level messages where somebody asked for one digest.
 - **A refusal is not a rate limit and is not a blip.** Waiting is the right
@@ -1384,7 +1387,9 @@ Details that bite, in rough order of how quickly they will bite:
   revoked token. A refusal Slack names is classified at the boundary, so a
   refusal about the *placeholder* — an edit window that closed, a message
   somebody deleted — posts the answer instead of losing it with the message,
-  and a refusal about the answer fails the turn exactly once.
+  and a refusal about the answer fails the turn exactly once. The live rewrite
+  stops on the first refusal rather than spending the turn retrying one: a
+  frame is a nicety, and the answer is written by `finish` either way.
 - **Identity mapping.** Slack user id → `people/<slug>.md`, so the same person is
   one memory across channels and DMs.
 - **Reactions are free feedback.** 👍 on an answer boosts the salience of the

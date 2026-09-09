@@ -19,7 +19,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 from siatt.adapters import slack as package
 from siatt.adapters.slack.app import NO_HTTP_VERIFICATION, SlackAdapter, messages
 from siatt.adapters.slack.events import Accepted, SlackContext, normalize
-from siatt.adapters.slack.limits import MAX_TEXT
+from siatt.adapters.slack.limits import MAX_BYTES
 from siatt.config import AttachmentSettings
 from siatt.core.agent import Agent, AgentResult
 from siatt.core.context import ContextPacker
@@ -512,7 +512,7 @@ async def test_an_answer_too_long_for_one_message_arrives_in_several(
     turn failed, and the retry — reading the answer in its own history — told
     the person it had already been posted."""
     long_answer = "\n\n".join(f"item {n}: " + "detail " * 30 for n in range(20))
-    assert len(long_answer) > MAX_TEXT, "the case under test"
+    assert len(long_answer.encode()) > MAX_BYTES, "the case under test"
     adapter, client = make_adapter(
         store, tokenizer, provider=ScriptedProvider([says(long_answer)] * 4)
     )
@@ -529,7 +529,7 @@ async def test_an_answer_too_long_for_one_message_arrives_in_several(
 
     thread = client.messages
     assert len(thread) > 1, "more than one message carried it"
-    assert all(len(message) <= MAX_TEXT for message in thread)
+    assert all(len(message.encode()) <= MAX_BYTES for message in thread)
     assert "item 0" in thread[0] and "item 19" in thread[-1], "in order, all of it"
     assert all(post.get("thread_ts") == "1700000000.000100" for post in client.posted), (
         "every part in the thread that asked"

@@ -12,6 +12,7 @@ import time
 
 import pytest
 
+from siatt.adapters.slack.limits import MAX_BYTES
 from siatt.adapters.slack.stream import (
     FINAL_ATTEMPTS,
     MAX_REFUSALS,
@@ -317,6 +318,40 @@ async def test_rate_limit_pressure_gives_up_on_frames_and_keeps_the_answer() -> 
     assert attempted == MAX_REFUSALS, "it stopped trying rather than trying harder"
 
 
+async def test_a_refused_frame_stops_the_painter_rather_than_being_retried() -> None:
+    """#264. A refusal is an answer no repetition changes — the placeholder is
+    gone, or past editing. Swallowed as an ordinary exception it was retried
+    once a second for the rest of the turn, which is what a long Korean answer
+    used to do before the budget was measured in bytes."""
+    poster = FakePoster()
+    message = live(poster)
+    await message.open()
+    poster.deny_updates = 1_000
+
+    try:
+        for n in range(20):
+            await message.delta(text(f"{n} "))
+            await ticks(1)
+    finally:
+        await message.aclose()
+
+    assert 1_000 - poster.deny_updates == 1, "it stopped on the first no"
+
+
+async def test_a_refused_frame_still_leaves_the_answer_to_be_written() -> None:
+    """Giving up on frames is not giving up on the turn."""
+    poster = FakePoster()
+    message = live(poster)
+    await message.open()
+    poster.deny_updates = 1
+    await message.delta(text("It was "))
+    await ticks(3)
+
+    await message.finish("It was Tuesday.")
+
+    assert poster.updates == ["It was Tuesday."], "the answer, into the placeholder"
+
+
 async def test_a_placeholder_that_could_not_be_posted_becomes_one_message() -> None:
     poster = FakePoster()
     poster.fail_posts = 1
@@ -415,7 +450,26 @@ async def test_a_frame_is_never_longer_than_a_message() -> None:
         await message.aclose()
 
     assert poster.updates, "it did paint"
-    assert all(len(frame) <= 12 for frame in poster.updates)
+    assert all(len(frame.encode()) <= 12 for frame in poster.updates)
+
+
+async def test_a_long_korean_answer_is_delivered_without_a_refusal() -> None:
+    """#264, end to end. 3,000 Hangul characters is 9,000 bytes: under the old
+    character budget it was one message, and `chat.update` answered
+    `msg_too_long` — the answer was posted separately and a `thinking…` was
+    left stranded above it. Now it is cut where it actually fits, so the
+    placeholder becomes the first part and the rest follow it."""
+    poster = FakePoster()
+    message = live(poster)
+    await message.open()
+
+    await message.finish("가" * 3000)
+
+    assert len(poster.updates) == 1, "the placeholder carried the first part"
+    assert poster.posts[0] == THINKING
+    written = poster.updates[0] + "".join(poster.posts[1:])
+    assert written == "가" * 3000, "every character went out"
+    assert all(len(part.encode()) <= MAX_BYTES for part in [*poster.updates, *poster.posts[1:]])
 
 
 # -- a refusal, told from a rate limit ----------------------------------------
