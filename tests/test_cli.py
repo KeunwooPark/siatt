@@ -163,7 +163,7 @@ def test_audit_lists_every_memory_by_scope_even_when_manifest_is_stale(
     assert "2 memory(s) across 2 scope(s)" in result.output
 
 
-def test_rescope_rewrites_the_old_scopes_in_one_commit(rig: tuple[Path, Path]) -> None:
+def test_rescope_rewrites_the_old_scopes(rig: tuple[Path, Path]) -> None:
     """The corpus predates #265. A `visibility` nothing reads is a field that
     says something untrue about where a memory may be recalled."""
     config, clone = rig
@@ -180,10 +180,53 @@ def test_rescope_rewrites_the_old_scopes_in_one_commit(rig: tuple[Path, Path]) -
     result = runner.invoke(app, ["rescope", "--config", str(config)])
 
     assert result.exit_code == 0, result.output
-    assert "rescoped 1 memory(s)" in result.output
+    assert "rescoped 1 memory(s) in 1 commit(s)" in result.output
     written = MemoryDoc.parse(target.read_text())
     assert written.frontmatter.visibility == "workspace"
     assert written.frontmatter.updated == old.frontmatter.updated, "not a content change"
+
+
+def test_rescope_takes_more_commits_than_one_when_the_corpus_needs_them(
+    rig: tuple[Path, Path],
+) -> None:
+    """#268. The cap is 25 a commit and a corpus worth rescoping is bigger than
+    that, so the command that exists for exactly this corpus was refused by it.
+
+    The cap stays — a commit nobody can read is not an audit trail — and the
+    run becomes as many commits as it takes."""
+    config, clone = rig
+    bootstrap(clone)
+    old = [
+        MemoryDoc.new(type="fact", title=f"Old note {n}", body="A note.", visibility="channel:C01")
+        for n in range(30)
+    ]
+    for doc in old:
+        target = clone / doc.suggested_path()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(doc.render())
+    Manifest.rebuild(clone)[0].save(clone)
+    repo = GitRepo.at(clone)
+    repo.commit("seed")
+    before = repo.head()
+
+    result = runner.invoke(app, ["rescope", "--config", str(config)])
+
+    assert result.exit_code == 0, result.output
+    assert "rescoped 30 memory(s) in 2 commit(s)" in result.output
+    assert all(
+        MemoryDoc.parse((clone / doc.suggested_path()).read_text()).frontmatter.visibility
+        == "workspace"
+        for doc in old
+    )
+    # Two commits, and each of them under the cap: the point is that the corpus
+    # is rescoped completely *and* the log stays readable.
+    made = repo.run("rev-list", f"{before}..HEAD", "--count").strip()
+    assert made == "2"
+    assert (
+        runner.invoke(app, ["rescope", "--config", str(config)])
+        .output.strip()
+        .endswith("already `workspace`")
+    ), "and a second run finds nothing to do"
 
 
 def test_rescope_says_so_when_there_is_nothing_to_do(rig: tuple[Path, Path]) -> None:

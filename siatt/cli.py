@@ -372,7 +372,7 @@ def why(
 
 @app.command()
 def rescope(config: ConfigOption = None) -> None:
-    """Rewrite every memory's `visibility` to `workspace`. One commit.
+    """Rewrite every memory's `visibility` to `workspace`.
 
     The corpus predates #265: files written while Siatt scoped memory per
     channel still carry `channel:C0123` or `private:U0456`, and nothing reads
@@ -380,10 +380,16 @@ def rescope(config: ConfigOption = None) -> None:
     where a memory may be recalled, which is worse than a field that says
     nothing.
 
-    Through the patch path like every other write, so it is one commit and
-    `git revert` puts it back. `updated` is not re-stamped -- normalizing a
-    field nothing reads is not a change to what a memory claims, and stamping
-    fifty files would make the whole corpus the newest thing in it.
+    Through the patch path like every other write, so `git revert` puts any of
+    it back. `updated` is not re-stamped -- normalizing a field nothing reads is
+    not a change to what a memory claims, and stamping fifty files would make
+    the whole corpus the newest thing in it.
+
+    In batches of `memory.max_files_per_commit`, and that is not a workaround
+    for the cap but the same argument the cap makes: a commit nobody can read is
+    not an audit trail. A corpus large enough to need rescoping is by definition
+    larger than one commit should be (#268), so a run over fifty memories is
+    three commits and `git log` shows what each one did.
     """
 
     async def main() -> None:
@@ -391,41 +397,57 @@ def rescope(config: ConfigOption = None) -> None:
         if not cfg.ltm.configured:
             err.print("[red]error[/red]: no memory repo configured; run `siatt init`")
             raise typer.Exit(1)
+        done, commits = 0, 0
         async with await Store.open(cfg.store.resolved()) as store:
             memory = await MemoryStore.open(cfg, store)
-            manifest = memory.manifest()
-            stale = sorted(
-                memory_id
-                for memory_id, entry in manifest.memories.items()
-                if entry.visibility != WORKSPACE
-            )
-            if not stale:
-                console.print("every memory is already `workspace`")
-                return
-            plan = [
-                Update(id=memory_id, frontmatter={"visibility": WORKSPACE}) for memory_id in stale
-            ]
-            try:
-                changes = PatchCompiler(
-                    cfg.ltm.resolved_clone_path(), manifest, policy=cfg.memory
-                ).compile(plan, job="rescope")
-                result = await memory.apply(
-                    changes,
-                    CommitMeta(
-                        summary=f"chore(memory): one pool, {len(stale)} memory(s) rescoped",
+            while batch := _stale_scopes(memory.manifest(), cfg.memory.max_files_per_commit):
+                try:
+                    changes = PatchCompiler(
+                        cfg.ltm.resolved_clone_path(), memory.manifest(), policy=cfg.memory
+                    ).compile(
+                        [Update(id=m, frontmatter={"visibility": WORKSPACE}) for m in batch],
                         job="rescope",
-                        memory_ids=stale,
-                    ),
-                )
-            except (MemoryStoreError, SiattError) as exc:
-                err.print(f"[red]error[/red]: {exc}")
-                raise typer.Exit(1) from exc
-            await memory.refresh_manifest()
-        console.print(f"rescoped {len(stale)} memory(s)")
-        if result.sha:
-            console.print(f"[dim]{result.sha}[/dim]")
+                    )
+                    await memory.apply(
+                        changes,
+                        CommitMeta(
+                            summary=f"chore(memory): one pool, {len(batch)} memory(s) rescoped",
+                            job="rescope",
+                            memory_ids=batch,
+                        ),
+                    )
+                except (MemoryStoreError, SiattError) as exc:
+                    err.print(f"[red]error[/red]: {exc}")
+                    if done:
+                        # Say what landed before saying what did not: the
+                        # commits already made are real, and a run that reports
+                        # only its failure reads as one that changed nothing.
+                        err.print(f"[yellow]![/yellow] {done} memory(s) were rescoped first")
+                    raise typer.Exit(1) from exc
+                # Re-read before the next batch: the manifest the compiler
+                # checks ids and paths against is the one this commit just
+                # changed, and a stale copy would offer the same batch again.
+                await memory.refresh_manifest()
+                done += len(batch)
+                commits += 1
+        if not done:
+            console.print("every memory is already `workspace`")
+            return
+        console.print(f"rescoped {done} memory(s) in {commits} commit(s)")
 
     _run(main())
+
+
+def _stale_scopes(manifest: Manifest, limit: int) -> list[str]:
+    """The next memories still carrying a pre-#265 visibility, at most `limit`.
+
+    Sorted, so a run interrupted part way resumes in the same order it started
+    in rather than jumping about the corpus.
+    """
+    stale = sorted(
+        memory_id for memory_id, entry in manifest.memories.items() if entry.visibility != WORKSPACE
+    )
+    return stale[:limit]
 
 
 @app.command()
